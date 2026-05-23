@@ -156,6 +156,8 @@ Follow Obsidian's **Developer Policies** and **Plugin Guidelines**. In particula
 - Introduce network calls without an obvious user-facing reason and documentation.
 - Ship features that require cloud services without clear disclosure and explicit opt-in.
 - Store or transmit vault contents unless essential and consented.
+- **Do not use any Node.js libraries or Node.js built-ins** in the codebase (for mobile compatibility).
+- **Do not use the `googleapis` Node library**. For Google Drive APIs, write a lightweight helper using Obsidian's browser-compatible `requestUrl` directly against the Google Drive REST APIs.
 
 ## Common tasks
 
