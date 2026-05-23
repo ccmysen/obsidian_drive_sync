@@ -1,7 +1,8 @@
-import {Plugin, TFile, Notice, ObsidianProtocolData, requestUrl} from 'obsidian';
-import {DEFAULT_SETTINGS, LoggingPluginSettings, SampleSettingTab} from './settings';
-import {google, drive_v3} from 'googleapis';
+import { Plugin, TFile, Notice, ObsidianProtocolData, requestUrl } from 'obsidian';
+import { DEFAULT_SETTINGS, LoggingPluginSettings, SampleSettingTab } from './settings';
 import * as CryptoJS from 'crypto-js';
+import { GoogleDriveClient } from './google';
+import { SyncManager } from './sync';
 
 export const CLIENT_ID = '926375238404-crta4spf8usf5hvo174v1npitf5t10mq.apps.googleusercontent.com';
 export const CLIENT_SECRET = 'YOUR_CLIENT_SECRET_HERE';
@@ -9,16 +10,12 @@ export const REDIRECT_URI = 'https://redirect.ccmysen.workers.dev/';
 
 export default class LoggingPlugin extends Plugin {
   settings: LoggingPluginSettings;
-  drive: drive_v3.Drive;
-  authClient = new google.auth.OAuth2({
-    clientId: CLIENT_ID,
-    clientSecret: CLIENT_SECRET,
-    redirectUri: REDIRECT_URI,
-  });
+  driveClient: GoogleDriveClient;
+  syncManager: SyncManager;
 
   async onload() {
     await this.loadSettings();
-    await this.initDrive();
+    this.initDrive();
 
     // Register protocol handler for obsidian://logging-plugin?code=...
     this.registerObsidianProtocolHandler(
@@ -45,6 +42,14 @@ export default class LoggingPlugin extends Plugin {
     );
 
     this.addSettingTab(new SampleSettingTab(this.app, this));
+
+    // Trigger sync asynchronously after loading so it doesn't block startup
+    if (this.settings.accessToken && this.settings.refreshToken) {
+      setTimeout(() => {
+        this.syncManager.runSync(this.settings.destinationFolderId)
+          .catch(err => console.error("Onload sync failed", err));
+      }, 2000);
+    }
   }
 
   async exchangeCodeForTokens(code: string) {
@@ -70,15 +75,21 @@ export default class LoggingPlugin extends Plugin {
 
       const tokens = response.json;
 
-      this.authClient.setCredentials(tokens);
       this.settings.accessToken = tokens.access_token || '';
       this.settings.refreshToken = tokens.refresh_token || '';
       // Clear verifier after use
       this.settings.codeVerifier = '';
       await this.saveSettings();
 
+      // Re-initialize Drive and Sync Manager with the new tokens
+      this.initDrive();
+
       new Notice('Google Drive authentication successful!');
       console.debug('Token retrieved and saved via worker');
+
+      // Trigger an immediate sync after successful login
+      this.syncManager.runSync(this.settings.destinationFolderId)
+        .catch(err => console.error("Immediate sync failed", err));
     } catch (e) {
       console.error('Failed to get tokens from code via worker', e);
       new Notice(
@@ -96,14 +107,14 @@ export default class LoggingPlugin extends Plugin {
     const hash = CryptoJS.SHA256(verifier);
     const challenge = CryptoJS.enc.Base64url.stringify(hash);
 
-    return {verifier, challenge};
+    return { verifier, challenge };
   }
 
   async handleLogin() {
     const redirectPath = this.settings.manualAuth ? 'display' : 'redirect';
     const dynamicRedirectUri = `https://redirect.ccmysen.workers.dev/${redirectPath}`;
 
-    const {verifier, challenge} = this.generatePKCE();
+    const { verifier, challenge } = this.generatePKCE();
     this.settings.codeVerifier = verifier;
     await this.saveSettings();
 
@@ -122,25 +133,19 @@ export default class LoggingPlugin extends Plugin {
     window.open(authUrl);
   }
 
-  async initDrive() {
-    if (this.settings.accessToken && this.settings.refreshToken) {
-      this.authClient.setCredentials({
-        access_token: this.settings.accessToken,
-        refresh_token: this.settings.refreshToken,
-      });
-    }
-
-    this.drive = google.drive({version: 'v3', auth: this.authClient});
-
-    this.authClient.on('tokens', async tokens => {
-      if (tokens.refresh_token) {
-        this.settings.refreshToken = tokens.refresh_token;
+  initDrive() {
+    this.driveClient = new GoogleDriveClient(
+      CLIENT_ID,
+      CLIENT_SECRET,
+      this.settings.accessToken,
+      this.settings.refreshToken,
+      async (accessToken, refreshToken) => {
+        this.settings.accessToken = accessToken;
+        this.settings.refreshToken = refreshToken;
+        await this.saveSettings();
       }
-      if (tokens.access_token) {
-        this.settings.accessToken = tokens.access_token;
-      }
-      await this.saveSettings();
-    });
+    );
+    this.syncManager = new SyncManager(this.app, this, this.driveClient);
   }
 
   async onunload() {
