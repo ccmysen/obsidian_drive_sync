@@ -5,7 +5,6 @@ import { GoogleDriveClient } from './google';
 import { SyncManager } from './sync';
 
 export const CLIENT_ID = '926375238404-crta4spf8usf5hvo174v1npitf5t10mq.apps.googleusercontent.com';
-export const CLIENT_SECRET = 'YOUR_CLIENT_SECRET_HERE';
 export const REDIRECT_URI = 'https://redirect.ccmysen.workers.dev/';
 
 export default class LoggingPlugin extends Plugin {
@@ -136,7 +135,6 @@ export default class LoggingPlugin extends Plugin {
   initDrive() {
     this.driveClient = new GoogleDriveClient(
       CLIENT_ID,
-      CLIENT_SECRET,
       this.settings.accessToken,
       this.settings.refreshToken,
       async (accessToken, refreshToken) => {

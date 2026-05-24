@@ -2,20 +2,17 @@ import { requestUrl, RequestUrlParam, RequestUrlResponse } from 'obsidian';
 
 export class GoogleDriveClient {
   private clientId: string;
-  private clientSecret: string;
   private accessToken: string;
   private refreshToken: string;
   private onTokenRefresh: (accessToken: string, refreshToken: string) => Promise<void>;
 
   constructor(
     clientId: string,
-    clientSecret: string,
     accessToken: string,
     refreshToken: string,
     onTokenRefresh: (accessToken: string, refreshToken: string) => Promise<void>
   ) {
     this.clientId = clientId;
-    this.clientSecret = clientSecret;
     this.accessToken = accessToken;
     this.refreshToken = refreshToken;
     this.onTokenRefresh = onTokenRefresh;
@@ -69,7 +66,6 @@ export class GoogleDriveClient {
       body: new URLSearchParams({
         grant_type: 'refresh_token',
         client_id: this.clientId,
-        client_secret: this.clientSecret,
         refresh_token: this.refreshToken,
       }).toString(),
       throw: false,
