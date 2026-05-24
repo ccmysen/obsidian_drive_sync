@@ -38,7 +38,7 @@ export default class LoggingPlugin extends Plugin {
     this.registerEvent(
       this.app.vault.on('modify', (file) => {
         if (file instanceof TFile && this.settings.accessToken && this.settings.refreshToken) {
-          this.syncManager.debounceSyncFile(file, this.settings.destinationFolderId);
+          this.syncManager.debounceSyncFile(file, this.settings.destinationFolderId || this.settings.destinationFolderName);
         }
       })
     );
@@ -46,7 +46,7 @@ export default class LoggingPlugin extends Plugin {
     this.registerEvent(
       this.app.vault.on('create', (file) => {
         if (file instanceof TFile && this.settings.accessToken && this.settings.refreshToken) {
-          this.syncManager.debounceSyncFile(file, this.settings.destinationFolderId);
+          this.syncManager.debounceSyncFile(file, this.settings.destinationFolderId || this.settings.destinationFolderName);
         }
       })
     );
@@ -62,7 +62,7 @@ export default class LoggingPlugin extends Plugin {
     this.registerEvent(
       this.app.vault.on('rename', (file, oldPath) => {
         if (file instanceof TFile && this.settings.accessToken && this.settings.refreshToken) {
-          this.syncManager.handleLocalRename(oldPath, file, this.settings.destinationFolderId);
+          this.syncManager.handleLocalRename(oldPath, file, this.settings.destinationFolderId || this.settings.destinationFolderName);
         }
       })
     );
@@ -72,7 +72,7 @@ export default class LoggingPlugin extends Plugin {
     // Trigger sync asynchronously after loading so it doesn't block startup
     if (this.settings.accessToken && this.settings.refreshToken) {
       setTimeout(() => {
-        this.syncManager.runSync(this.settings.destinationFolderId)
+        this.syncManager.runSync(this.settings.destinationFolderId || this.settings.destinationFolderName)
           .catch(err => console.error("Onload sync failed", err));
       }, 2000);
     }
@@ -84,11 +84,11 @@ export default class LoggingPlugin extends Plugin {
         if (intervalMinutes > 0) {
           const elapsedMs = Date.now() - this.lastSyncTime;
           if (elapsedMs >= intervalMinutes * 60 * 1000) {
-            if (this.settings.accessToken && this.settings.refreshToken && this.settings.destinationFolderId) {
+            if (this.settings.accessToken && this.settings.refreshToken && (this.settings.destinationFolderId || this.settings.destinationFolderName)) {
               if (DEBUG_LOGGING) {
                 console.info("Periodic sync: starting scheduled full sync...");
               }
-              this.syncManager.runSync(this.settings.destinationFolderId)
+              this.syncManager.runSync(this.settings.destinationFolderId || this.settings.destinationFolderName)
                 .catch(err => console.error("Periodic sync failed", err));
             }
           }
@@ -134,7 +134,7 @@ export default class LoggingPlugin extends Plugin {
       }
 
       // Trigger an immediate sync after successful login
-      this.syncManager.runSync(this.settings.destinationFolderId)
+      this.syncManager.runSync(this.settings.destinationFolderId || this.settings.destinationFolderName)
         .catch(err => console.error("Immediate sync failed", err));
     } catch (e) {
       console.error('Failed to get tokens from code via worker', e);
@@ -206,6 +206,9 @@ export default class LoggingPlugin extends Plugin {
       DEFAULT_SETTINGS,
       (await this.loadData()) as Partial<LoggingPluginSettings>
     );
+    if (!this.settings.destinationFolderName) {
+      this.settings.destinationFolderName = this.app.vault.getName();
+    }
   }
 
   async saveSettings() {

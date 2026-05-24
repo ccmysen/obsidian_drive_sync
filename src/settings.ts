@@ -5,6 +5,7 @@ export interface LoggingPluginSettings {
   accessToken: string;
   refreshToken: string;
   destinationFolderId: string;
+  destinationFolderName: string;
   manualAuth: boolean;
   codeVerifier: string;
   syncIntervalMinutes: number;
@@ -14,6 +15,7 @@ export const DEFAULT_SETTINGS: LoggingPluginSettings = {
   accessToken: '',
   refreshToken: '',
   destinationFolderId: '',
+  destinationFolderName: '',
   manualAuth: false,
   codeVerifier: '',
   syncIntervalMinutes: 15,
@@ -37,14 +39,16 @@ export class SampleSettingTab extends PluginSettingTab {
     containerEl.createEl('h2', {text: 'Synchronization Settings'});
 
     new Setting(containerEl)
-      .setName('Destination Folder ID')
-      .setDesc('The ID of the Google Drive folder to sync to (use \'root\' to sync to the main Google Drive directory)')
+      .setName('Destination Folder Name')
+      .setDesc('The name of the Google Drive folder to sync to (use \'root\' to sync to the main Google Drive directory)')
       .addText(text =>
         text
-          .setPlaceholder('Enter Folder ID')
-          .setValue(this.plugin.settings.destinationFolderId)
+          .setPlaceholder('Enter Folder Name')
+          .setValue(this.plugin.settings.destinationFolderName)
           .onChange(async value => {
-            this.plugin.settings.destinationFolderId = value;
+            this.plugin.settings.destinationFolderName = value;
+            // Clear the resolved ID to force re-resolution during the next sync
+            this.plugin.settings.destinationFolderId = '';
             await this.plugin.saveSettings();
           })
       );
