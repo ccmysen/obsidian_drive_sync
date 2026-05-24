@@ -94,27 +94,47 @@ export class SyncManager {
       return null;
     }
 
+    const pluginSettings = (this.plugin as any).settings;
     let resolvedFolderId = destinationFolderId;
-    const folderExists = await this.driveClient.folderExists(resolvedFolderId);
-    if (!folderExists) {
-      if (DEBUG_LOGGING) {
-        console.log(`Destination folder ID/name "${destinationFolderId}" not found on Google Drive. Resolving...`);
+    
+    // Check if the destination folder exists by ID and fetch its metadata
+    let folderMeta = await this.driveClient.getFolderMetadata(resolvedFolderId);
+    
+    // If it doesn't exist by ID, but it was our cached ID, warn the user and fallback to name lookup
+    if (!folderMeta && pluginSettings && pluginSettings.destinationFolderId === resolvedFolderId) {
+      const errMsg = `Google Drive folder with ID "${resolvedFolderId}" was not found (it may have been deleted). Resetting and re-resolving by name...`;
+      new Notice(errMsg);
+      console.warn(errMsg);
+      
+      pluginSettings.destinationFolderId = '';
+      if (typeof (this.plugin as any).saveSettings === 'function') {
+        await (this.plugin as any).saveSettings();
       }
-      const existingFolder = await this.driveClient.findItem(destinationFolderId, 'root', true);
+      
+      // Fallback to name or root
+      resolvedFolderId = pluginSettings.destinationFolderName || 'root';
+      folderMeta = await this.driveClient.getFolderMetadata(resolvedFolderId);
+    }
+
+    if (!folderMeta) {
+      if (DEBUG_LOGGING) {
+        console.log(`Destination folder ID/name "${resolvedFolderId}" not found on Google Drive. Resolving...`);
+      }
+      const existingFolder = await this.driveClient.findItem(resolvedFolderId, 'root', true);
       if (existingFolder) {
         resolvedFolderId = existingFolder.id;
         if (DEBUG_LOGGING) {
-          console.log(`Found existing folder "${destinationFolderId}" with ID: ${resolvedFolderId}`);
+          console.log(`Found existing folder "${resolvedFolderId}" with ID: ${resolvedFolderId}`);
         }
       } else {
         try {
-          resolvedFolderId = await this.driveClient.createFolder(destinationFolderId, 'root');
+          resolvedFolderId = await this.driveClient.createFolder(resolvedFolderId, 'root');
           if (DEBUG_LOGGING) {
-            console.log(`Created new destination folder "${destinationFolderId}" with ID: ${resolvedFolderId}`);
+            console.log(`Created new destination folder "${resolvedFolderId}" with ID: ${resolvedFolderId}`);
           }
         } catch (createErr) {
           const errDetails = createErr instanceof Error ? createErr.message : String(createErr);
-          const errMsg = `Failed to create destination folder "${destinationFolderId}" on Google Drive: ${errDetails}`;
+          const errMsg = `Failed to create destination folder "${resolvedFolderId}" on Google Drive: ${errDetails}`;
           new Notice(errMsg);
           console.error(errMsg);
           return null;
@@ -122,14 +142,26 @@ export class SyncManager {
       }
 
       // Update plugin settings with the resolved folder ID to avoid future lookups
-      const pluginAny = this.plugin as any;
-      if (pluginAny.settings) {
-        pluginAny.settings.destinationFolderId = resolvedFolderId;
-        if (typeof pluginAny.saveSettings === 'function') {
-          await pluginAny.saveSettings();
+      if (pluginSettings) {
+        pluginSettings.destinationFolderId = resolvedFolderId;
+        if (typeof (this.plugin as any).saveSettings === 'function') {
+          await (this.plugin as any).saveSettings();
+        }
+      }
+    } else {
+      // Folder exists! Check if its name matches the configured folder name and rename if necessary
+      if (folderMeta.id !== 'root' && pluginSettings && pluginSettings.destinationFolderName && folderMeta.name !== pluginSettings.destinationFolderName) {
+        if (DEBUG_LOGGING) {
+          console.log(`Folder name mismatch on Google Drive. Renaming folder "${folderMeta.name}" (ID: ${folderMeta.id}) to "${pluginSettings.destinationFolderName}" to keep in sync.`);
+        }
+        try {
+          await this.driveClient.renameItem(folderMeta.id, pluginSettings.destinationFolderName);
+        } catch (renameErr) {
+          console.error(`Failed to sync folder name on Google Drive:`, renameErr);
         }
       }
     }
+
     return resolvedFolderId;
   }
 

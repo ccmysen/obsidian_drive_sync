@@ -62,11 +62,26 @@ describe('SyncManager', () => {
       manifest: {
         id: 'obsidian_drive_sync',
       },
+      settings: {
+        destinationFolderId: 'destId',
+        destinationFolderName: 'MyFolder',
+      },
+      saveSettings: vi.fn().mockResolvedValue(undefined),
     };
 
     // Mock GoogleDriveClient
     mockDriveClient = {
       folderExists: vi.fn().mockResolvedValue(true),
+      getFolderMetadata: vi.fn().mockImplementation(async (id) => {
+        if (id === 'root') {
+          return { id: 'root', name: 'root', mimeType: 'application/vnd.google-apps.folder', trashed: false };
+        }
+        if (id === 'invalidId' || id === 'nonexistentId') {
+          return null;
+        }
+        return { id: id, name: 'MyFolder', mimeType: 'application/vnd.google-apps.folder', trashed: false };
+      }),
+      renameItem: vi.fn().mockResolvedValue(undefined),
       findItem: vi.fn(),
       createFolder: vi.fn(),
       resolveFolderHierarchy: vi.fn(),
@@ -330,11 +345,12 @@ describe('SyncManager', () => {
     });
     fileContents['rootfile.md'] = 'root content';
 
-    mockDriveClient.folderExists.mockResolvedValueOnce(false);
+    mockDriveClient.getFolderMetadata.mockResolvedValueOnce(null);
+    mockDriveClient.getFolderMetadata.mockResolvedValueOnce(null);
     mockDriveClient.findItem.mockResolvedValueOnce({ id: 'resolvedRealFolderId' });
     mockDriveClient.resolveFolderHierarchy.mockResolvedValue('resolvedRealFolderId');
 
-    mockPlugin.settings = { destinationFolderId: 'MyFolder' };
+    mockPlugin.settings = { destinationFolderId: 'MyFolder', destinationFolderName: 'MyFolder' };
     mockPlugin.saveSettings = vi.fn().mockResolvedValue(undefined);
 
     await syncManager.runSync('MyFolder');
@@ -352,12 +368,13 @@ describe('SyncManager', () => {
     });
     fileContents['rootfile.md'] = 'root content';
 
-    mockDriveClient.folderExists.mockResolvedValueOnce(false);
+    mockDriveClient.getFolderMetadata.mockResolvedValueOnce(null);
+    mockDriveClient.getFolderMetadata.mockResolvedValueOnce(null);
     mockDriveClient.findItem.mockResolvedValueOnce(null);
     mockDriveClient.createFolder.mockResolvedValueOnce('newCreatedFolderId');
     mockDriveClient.resolveFolderHierarchy.mockResolvedValue('newCreatedFolderId');
 
-    mockPlugin.settings = { destinationFolderId: 'NewFolder' };
+    mockPlugin.settings = { destinationFolderId: 'NewFolder', destinationFolderName: 'NewFolder' };
     mockPlugin.saveSettings = vi.fn().mockResolvedValue(undefined);
 
     await syncManager.runSync('NewFolder');

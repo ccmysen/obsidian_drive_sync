@@ -98,19 +98,40 @@ export class GoogleDriveClient {
 
   // Check if a folder ID exists and is a folder
   public async folderExists(folderId: string): Promise<boolean> {
+    const meta = await this.getFolderMetadata(folderId);
+    return meta !== null;
+  }
+
+  public async getFolderMetadata(folderId: string): Promise<{ id: string; name: string; mimeType: string; trashed: boolean } | null> {
     if (folderId === 'root') {
-      return true;
+      return { id: 'root', name: 'root', mimeType: 'application/vnd.google-apps.folder', trashed: false };
     }
     try {
       const res = await this.request({
-        url: `https://www.googleapis.com/drive/v3/files/${folderId}?fields=id,mimeType,trashed`,
+        url: `https://www.googleapis.com/drive/v3/files/${folderId}?fields=id,name,mimeType,trashed`,
         method: 'GET',
       });
       const data = res.json;
-      return data && data.mimeType === 'application/vnd.google-apps.folder' && !data.trashed;
+      if (data && data.mimeType === 'application/vnd.google-apps.folder' && !data.trashed) {
+        return { id: data.id, name: data.name, mimeType: data.mimeType, trashed: data.trashed };
+      }
+      return null;
     } catch (e) {
-      return false;
+      return null;
     }
+  }
+
+  public async renameItem(itemId: string, newName: string): Promise<void> {
+    await this.request({
+      url: `https://www.googleapis.com/drive/v3/files/${itemId}`,
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: newName,
+      }),
+    });
   }
 
   // Find a file/folder by name and parent folder ID
