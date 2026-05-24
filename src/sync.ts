@@ -116,8 +116,17 @@ export class SyncManager {
       try {
         const { hash, content } = await this.getFileHash(file);
 
+        if (!entry) {
+          console.info(`Unseen file (new locally): ${file.path}`);
+        } else if (entry.deleted) {
+          console.info(`Restored file (previously marked as deleted): ${file.path}`);
+        } else if (entry.hash !== hash) {
+          console.info(`Modified file (hash mismatch): ${file.path}`);
+        }
+
         // Check if file is already in sync
         if (entry && entry.hash === hash && !entry.deleted) {
+          console.debug(`Synced file (unchanged): ${file.path}`);
           skipCount++;
           continue;
         }
@@ -182,11 +191,11 @@ export class SyncManager {
       if (!localFilePaths.has(path)) {
         const entry = this.state.files[path];
         if (entry && !entry.deleted) {
+          console.info(`Deleted file (exists in state but missing locally): ${path}`);
           entry.deleted = true;
           entry.lastSyncTime = Date.now();
           await this.saveState(); // Incremental save
           deleteMarkCount++;
-          console.log(`Marked file as deleted: ${path}`);
         }
       }
     }
