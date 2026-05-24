@@ -55,6 +55,17 @@ Quick starting guide for new plugin devs:
 
 - Copy over `main.js`, `styles.css`, `manifest.json` to your vault `VaultFolder/.obsidian/plugins/your-plugin-id/`.
 
+## Testing
+This project uses **Vitest** for running unit tests on the sync engine in a mocked environment.
+
+To run the unit tests:
+```bash
+npm run test
+```
+
+The comprehensive testing strategy, covering both manual testing inside a real Obsidian test vault and automated unit tests with mocks, is documented in the test plan:
+- [test_plan.md](file:///home/bigharryox/.gemini/antigravity-cli/brain/20d8c6f8-8723-4d13-8a65-23e719960566/test_plan.md)
+
 ## Improve code quality with eslint
 - [ESLint](https://eslint.org/) is a tool that analyzes your code to quickly find problems. You can run ESLint against your plugin to find common bugs and ways to improve your code. 
 - This project already has eslint preconfigured, you can invoke a check by running`npm run lint`
