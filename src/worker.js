@@ -100,7 +100,7 @@ export default {
       try {
         // Parse the JSON body payload passed by your Obsidian plugin
         const formData = await request.formData();
-      
+ 
         // Extract the parameters using .get()
         const code = formData.get("code");
         const code_verifier = formData.get("code_verifier");

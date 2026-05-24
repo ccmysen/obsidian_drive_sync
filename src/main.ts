@@ -67,7 +67,6 @@ export default class LoggingPlugin extends Plugin {
           grant_type: 'authorization_code',
           code: code,
           client_id: CLIENT_ID,
-          client_secret: CLIENT_SECRET,
           redirect_uri: dynamicRedirectUri,
           code_verifier: this.settings.codeVerifier,
         }).toString(),
