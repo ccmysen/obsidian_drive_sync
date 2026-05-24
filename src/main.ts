@@ -85,7 +85,9 @@ export default class LoggingPlugin extends Plugin {
           const elapsedMs = Date.now() - this.lastSyncTime;
           if (elapsedMs >= intervalMinutes * 60 * 1000) {
             if (this.settings.accessToken && this.settings.refreshToken && this.settings.destinationFolderId) {
-              console.info("Periodic sync: starting scheduled full sync...");
+              if (DEBUG_LOGGING) {
+                console.info("Periodic sync: starting scheduled full sync...");
+              }
               this.syncManager.runSync(this.settings.destinationFolderId)
                 .catch(err => console.error("Periodic sync failed", err));
             }
@@ -127,7 +129,9 @@ export default class LoggingPlugin extends Plugin {
       this.initDrive();
 
       new Notice('Google Drive authentication successful!');
-      console.debug('Token retrieved and saved via worker');
+      if (DEBUG_LOGGING) {
+        console.debug('Token retrieved and saved via worker');
+      }
 
       // Trigger an immediate sync after successful login
       this.syncManager.runSync(this.settings.destinationFolderId)
@@ -191,7 +195,9 @@ export default class LoggingPlugin extends Plugin {
   }
 
   async onunload() {
-    console.log('Un-load');
+    if (DEBUG_LOGGING) {
+      console.log('Un-load');
+    }
   }
 
   async loadSettings() {

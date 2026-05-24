@@ -34,7 +34,9 @@ export class GoogleDriveClient {
     const res = await requestUrl(param);
 
     if (res.status === 401 && !isRetry) {
-      console.log("Access token expired (401). Attempting token refresh...");
+      if (DEBUG_LOGGING) {
+        console.log("Access token expired (401). Attempting token refresh...");
+      }
       await this.refreshAccessToken();
       // Update authorization header with new token
       if (param.headers) {
@@ -56,7 +58,9 @@ export class GoogleDriveClient {
       throw new Error("No refresh token available. Cannot refresh access token.");
     }
 
-    console.log("Refreshing Google Drive API access token...");
+    if (DEBUG_LOGGING) {
+      console.log("Refreshing Google Drive API access token...");
+    }
     const res = await requestUrl({
       url: 'https://oauth2.googleapis.com/token',
       method: 'POST',
@@ -84,7 +88,9 @@ export class GoogleDriveClient {
       }
       // Save updated tokens
       await this.onTokenRefresh(this.accessToken, this.refreshToken);
-      console.log("Access token successfully refreshed and saved.");
+      if (DEBUG_LOGGING) {
+        console.log("Access token successfully refreshed and saved.");
+      }
     } else {
       throw new Error("No access token returned in refresh response.");
     }
@@ -123,7 +129,9 @@ export class GoogleDriveClient {
 
   // Create a folder under a parent folder
   public async createFolder(name: string, parentId: string): Promise<string> {
-    console.log(`Creating folder on Google Drive: "${name}" under parent: ${parentId}`);
+    if (DEBUG_LOGGING) {
+      console.log(`Creating folder on Google Drive: "${name}" under parent: ${parentId}`);
+    }
     const res = await this.request({
       url: 'https://www.googleapis.com/drive/v3/files',
       method: 'POST',
@@ -138,7 +146,9 @@ export class GoogleDriveClient {
     });
 
     const folderId = res.json.id;
-    console.log(`Successfully created folder "${name}" with ID: ${folderId}`);
+    if (DEBUG_LOGGING) {
+      console.log(`Successfully created folder "${name}" with ID: ${folderId}`);
+    }
     return folderId;
   }
 
@@ -151,7 +161,9 @@ export class GoogleDriveClient {
       if (!part) continue;
       const existingFolder = await this.findItem(part, currentParentId, true);
       if (existingFolder) {
-        console.log(`Found existing folder: "${part}" (ID: ${existingFolder.id})`);
+        if (DEBUG_LOGGING) {
+          console.log(`Found existing folder: "${part}" (ID: ${existingFolder.id})`);
+        }
         currentParentId = existingFolder.id;
       } else {
         currentParentId = await this.createFolder(part, currentParentId);

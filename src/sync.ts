@@ -97,15 +97,21 @@ export class SyncManager {
     let resolvedFolderId = destinationFolderId;
     const folderExists = await this.driveClient.folderExists(resolvedFolderId);
     if (!folderExists) {
-      console.log(`Destination folder ID/name "${destinationFolderId}" not found on Google Drive. Resolving...`);
+      if (DEBUG_LOGGING) {
+        console.log(`Destination folder ID/name "${destinationFolderId}" not found on Google Drive. Resolving...`);
+      }
       const existingFolder = await this.driveClient.findItem(destinationFolderId, 'root', true);
       if (existingFolder) {
         resolvedFolderId = existingFolder.id;
-        console.log(`Found existing folder "${destinationFolderId}" with ID: ${resolvedFolderId}`);
+        if (DEBUG_LOGGING) {
+          console.log(`Found existing folder "${destinationFolderId}" with ID: ${resolvedFolderId}`);
+        }
       } else {
         try {
           resolvedFolderId = await this.driveClient.createFolder(destinationFolderId, 'root');
-          console.log(`Created new destination folder "${destinationFolderId}" with ID: ${resolvedFolderId}`);
+          if (DEBUG_LOGGING) {
+            console.log(`Created new destination folder "${destinationFolderId}" with ID: ${resolvedFolderId}`);
+          }
         } catch (createErr) {
           const errDetails = createErr instanceof Error ? createErr.message : String(createErr);
           const errMsg = `Failed to create destination folder "${destinationFolderId}" on Google Drive: ${errDetails}`;
@@ -155,11 +161,15 @@ export class SyncManager {
     if (driveFileId) {
       // Update existing file content
       await this.driveClient.updateFileContent(driveFileId, content);
-      console.log(`Updated file content on Drive: ${file.path}`);
+      if (DEBUG_LOGGING) {
+        console.log(`Updated file content on Drive: ${file.path}`);
+      }
     } else {
       // Create new file on Drive
       driveFileId = await this.driveClient.createFile(fileName, parentFolderId, content);
-      console.log(`Created new file on Drive: ${file.path}`);
+      if (DEBUG_LOGGING) {
+        console.log(`Created new file on Drive: ${file.path}`);
+      }
     }
 
     return driveFileId;
@@ -179,15 +189,17 @@ export class SyncManager {
       return;
     }
 
-    if (!entry) {
-      console.info(`Incremental sync: unseen file (new locally): ${file.path}`);
-    } else if (entry.deleted) {
-      console.info(`Incremental sync: restored file (previously marked as deleted): ${file.path}`);
-    } else if (entry.hash !== hash) {
-      console.info(`Incremental sync: modified file (hash mismatch): ${file.path}`);
+    if (DEBUG_LOGGING) {
+      if (!entry) {
+        console.info(`Incremental sync: unseen file (new locally): ${file.path}`);
+      } else if (entry.deleted) {
+        console.info(`Incremental sync: restored file (previously marked as deleted): ${file.path}`);
+      } else if (entry.hash !== hash) {
+        console.info(`Incremental sync: modified file (hash mismatch): ${file.path}`);
+      }
+      console.log(`Incremental sync: syncing file: ${file.path}`);
     }
 
-    console.log(`Incremental sync: syncing file: ${file.path}`);
     const driveFileId = await this.syncFileCore(file, resolvedFolderId, entry);
 
     this.state.files[file.path] = {
@@ -242,7 +254,9 @@ export class SyncManager {
     await this.loadState();
     const entry = this.state.files[path];
     if (entry && !entry.deleted) {
-      console.info(`Incremental sync: local deletion detected for ${path}`);
+      if (DEBUG_LOGGING) {
+        console.info(`Incremental sync: local deletion detected for ${path}`);
+      }
       entry.deleted = true;
       entry.lastSyncTime = Date.now();
       await this.saveState();
@@ -262,7 +276,9 @@ export class SyncManager {
       this.debounceTimers.delete(oldPath);
     }
 
-    console.info(`Incremental sync: file renamed/moved from ${oldPath} to ${file.path}`);
+    if (DEBUG_LOGGING) {
+      console.info(`Incremental sync: file renamed/moved from ${oldPath} to ${file.path}`);
+    }
     
     // Mark old path as deleted in state
     await this.handleLocalDeletion(oldPath);
@@ -303,7 +319,9 @@ export class SyncManager {
     }
 
     new Notice("Google Drive sync started...");
-    console.log("Starting Google Drive sync...");
+    if (DEBUG_LOGGING) {
+      console.log("Starting Google Drive sync...");
+    }
 
     await this.loadState();
 
@@ -328,20 +346,24 @@ export class SyncManager {
 
         // Check if file is already in sync
         if (entry && entry.hash === hash && !entry.deleted) {
-          console.debug(`Synced file (unchanged): ${file.path}`);
+          if (DEBUG_LOGGING) {
+            console.debug(`Synced file (unchanged): ${file.path}`);
+          }
           skipCount++;
           continue;
         }
 
-        if (!entry) {
-          console.info(`Unseen file (new locally): ${file.path}`);
-        } else if (entry.deleted) {
-          console.info(`Restored file (previously marked as deleted): ${file.path}`);
-        } else if (entry.hash !== hash) {
-          console.info(`Modified file (hash mismatch): ${file.path}`);
+        if (DEBUG_LOGGING) {
+          if (!entry) {
+            console.info(`Unseen file (new locally): ${file.path}`);
+          } else if (entry.deleted) {
+            console.info(`Restored file (previously marked as deleted): ${file.path}`);
+          } else if (entry.hash !== hash) {
+            console.info(`Modified file (hash mismatch): ${file.path}`);
+          }
+          console.log(`Syncing file: ${file.path}`);
         }
 
-        console.log(`Syncing file: ${file.path}`);
         const driveFileId = await this.syncFileCore(file, resolvedFolderId, entry);
 
         // Update local sync state
@@ -367,7 +389,9 @@ export class SyncManager {
       if (!localFilePaths.has(path)) {
         const entry = this.state.files[path];
         if (entry && !entry.deleted) {
-          console.info(`Deleted file (exists in state but missing locally): ${path}`);
+          if (DEBUG_LOGGING) {
+            console.info(`Deleted file (exists in state but missing locally): ${path}`);
+          }
           entry.deleted = true;
           entry.lastSyncTime = Date.now();
           await this.saveState(); // Incremental save
@@ -377,7 +401,9 @@ export class SyncManager {
     }
 
     const summary = `Sync complete! Synced: ${uploadCount}, Skipped: ${skipCount}, Deletions logged: ${deleteMarkCount}, Failed: ${failCount}`;
-    console.log(summary);
+    if (DEBUG_LOGGING) {
+      console.log(summary);
+    }
     new Notice(summary);
   }
 }

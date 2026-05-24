@@ -3,6 +3,9 @@ import { SyncManager } from '../sync';
 import { GoogleDriveClient } from '../google';
 import * as CryptoJS from 'crypto-js';
 
+// Define the global compile-time constant for the test runner environment
+(globalThis as any).DEBUG_LOGGING = true;
+
 vi.mock('obsidian', () => {
   return {
     Notice: class {
