@@ -66,6 +66,29 @@ npm run test
 The comprehensive testing strategy, covering both manual testing inside a real Obsidian test vault and automated unit tests with mocks, is documented in the test plan:
 - [test_plan.md](file:///home/bigharryox/.gemini/antigravity-cli/brain/20d8c6f8-8723-4d13-8a65-23e719960566/test_plan.md)
 
+## Sync Implementation & Architecture
+
+This plugin implements a lightweight, mobile-safe synchronization mechanism that automatically pushes local vault changes to a specified Google Drive destination folder on plugin load (`onload`).
+
+### 1. State Tracking (`sync_state.json`)
+The sync state is cached locally in `.obsidian/plugins/logging-plugin/sync_state.json` to prevent unnecessary uploads:
+- **Hashing**: Computes MD5 hashes of all local files (using string hashing for text/markdown files and binary word-array conversion for assets).
+- **Metadata**: Each entry maps a file path to its `hash`, its remote `driveFileId`, a `lastSyncTime` timestamp, and a `deleted` status flag.
+- **Incremental Saves**: The state file is updated and saved to disk immediately after each file successfully syncs, protecting against data loss if the sync operation is interrupted.
+
+### 2. Folder Hierarchy resolution
+Google Drive doesn't use path strings to organize files; it uses unique folder IDs with parent-child relationships. The sync engine resolves paths by:
+- Scanning the local path parts (e.g., `Documents/Notes/my-note.md`).
+- Checking and dynamically creating folders on Drive (`Documents` inside the root destination folder, then `Notes` inside `Documents`).
+- Caching resolved folder IDs in-memory during execution to minimize redundant API calls.
+
+### 3. Current Limitations (Roadmap / Future Tasks)
+The current version is a **v1 implementation** and has the following design boundaries:
+- **One-Way Sync (Upload-Only)**: Files only flow from the local vault to Google Drive. Remote additions or edits on Google Drive are not pulled down to Obsidian.
+- **No Remote Deletion**: Local deletions are marked as `deleted: true` in `sync_state.json` but the corresponding file is **not** deleted or trashed on Google Drive (designed to prevent accidental data loss).
+- **Conflict Resolution**: Since changes only flow from local to remote, there is no conflict resolution logic for concurrent edits on both sides.
+- **Size Limits**: For massive vaults with large binary assets, the in-memory array-buffer hashing conversion may experience performance degradation.
+
 ## Improve code quality with eslint
 - [ESLint](https://eslint.org/) is a tool that analyzes your code to quickly find problems. You can run ESLint against your plugin to find common bugs and ways to improve your code. 
 - This project already has eslint preconfigured, you can invoke a check by running`npm run lint`
