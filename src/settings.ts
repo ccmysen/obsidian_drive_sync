@@ -2,7 +2,6 @@ import {App, PluginSettingTab, Setting} from 'obsidian';
 import LoggingPlugin, {CLIENT_ID, REDIRECT_URI} from './main';
 
 export interface LoggingPluginSettings {
-  myId: string;
   accessToken: string;
   refreshToken: string;
   destinationFolderId: string;
@@ -11,7 +10,6 @@ export interface LoggingPluginSettings {
 }
 
 export const DEFAULT_SETTINGS: LoggingPluginSettings = {
-  myId: 'default',
   accessToken: '',
   refreshToken: '',
   destinationFolderId: '',
@@ -32,18 +30,7 @@ export class SampleSettingTab extends PluginSettingTab {
 
     containerEl.empty();
 
-    new Setting(containerEl)
-      .setName('Logging')
-      .setDesc('Tell Me')
-      .addText(text =>
-        text
-          .setPlaceholder('Enter your secret')
-          .setValue(this.plugin.settings.myId)
-          .onChange(async value => {
-            this.plugin.settings.myId = value;
-            await this.plugin.saveSettings();
-          })
-      );
+
 
     containerEl.createEl('h2', {text: 'Synchronization Settings'});
 
