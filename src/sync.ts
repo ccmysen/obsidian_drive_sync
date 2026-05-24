@@ -19,6 +19,7 @@ export class SyncManager {
   private driveClient: GoogleDriveClient;
   private stateFilePath: string;
   private state: SyncState = { files: {} };
+  private debounceTimers: Map<string, any> = new Map();
 
   constructor(app: App, plugin: Plugin, driveClient: GoogleDriveClient) {
     this.app = app;
@@ -87,6 +88,196 @@ export class SyncManager {
     }
   }
 
+  // Verify and resolve/create destination folder ID
+  public async resolveDestinationFolderId(destinationFolderId: string): Promise<string | null> {
+    if (!destinationFolderId || destinationFolderId.trim() === '' || destinationFolderId.trim() === '.') {
+      return null;
+    }
+
+    let resolvedFolderId = destinationFolderId;
+    const folderExists = await this.driveClient.folderExists(resolvedFolderId);
+    if (!folderExists) {
+      console.log(`Destination folder ID/name "${destinationFolderId}" not found on Google Drive. Resolving...`);
+      const existingFolder = await this.driveClient.findItem(destinationFolderId, 'root', true);
+      if (existingFolder) {
+        resolvedFolderId = existingFolder.id;
+        console.log(`Found existing folder "${destinationFolderId}" with ID: ${resolvedFolderId}`);
+      } else {
+        try {
+          resolvedFolderId = await this.driveClient.createFolder(destinationFolderId, 'root');
+          console.log(`Created new destination folder "${destinationFolderId}" with ID: ${resolvedFolderId}`);
+        } catch (createErr) {
+          const errDetails = createErr instanceof Error ? createErr.message : String(createErr);
+          const errMsg = `Failed to create destination folder "${destinationFolderId}" on Google Drive: ${errDetails}`;
+          new Notice(errMsg);
+          console.error(errMsg);
+          return null;
+        }
+      }
+
+      // Update plugin settings with the resolved folder ID to avoid future lookups
+      const pluginAny = this.plugin as any;
+      if (pluginAny.settings) {
+        pluginAny.settings.destinationFolderId = resolvedFolderId;
+        if (typeof pluginAny.saveSettings === 'function') {
+          await pluginAny.saveSettings();
+        }
+      }
+    }
+    return resolvedFolderId;
+  }
+
+  // Core logic to upload or update a file, returning its Drive ID
+  private async syncFileCore(file: TFile, resolvedFolderId: string, entry: SyncEntry | undefined): Promise<string> {
+    const { content } = await this.getFileHash(file);
+    const pathParts = file.path.split('/');
+    const fileName = pathParts.pop() || file.name;
+    const parentFolderId = await this.driveClient.resolveFolderHierarchy(pathParts, resolvedFolderId);
+
+    let driveFileId = entry?.driveFileId || '';
+
+    // If we have a cached file ID, verify it exists on Google Drive
+    if (driveFileId) {
+      const driveItem = await this.driveClient.findItem(fileName, parentFolderId, false);
+      if (driveItem) {
+        driveFileId = driveItem.id;
+      } else {
+        driveFileId = ''; // Reset to trigger creation if it was deleted on Drive
+      }
+    } else {
+      // Check if file exists on Drive with same name and parent
+      const driveItem = await this.driveClient.findItem(fileName, parentFolderId, false);
+      if (driveItem) {
+        driveFileId = driveItem.id;
+      }
+    }
+
+    if (driveFileId) {
+      // Update existing file content
+      await this.driveClient.updateFileContent(driveFileId, content);
+      console.log(`Updated file content on Drive: ${file.path}`);
+    } else {
+      // Create new file on Drive
+      driveFileId = await this.driveClient.createFile(fileName, parentFolderId, content);
+      console.log(`Created new file on Drive: ${file.path}`);
+    }
+
+    return driveFileId;
+  }
+
+  // Synchronize a single file incrementally
+  public async syncSingleFile(file: TFile, resolvedFolderId: string): Promise<void> {
+    const pathParts = file.path.split('/');
+    if (pathParts.some(part => part.startsWith('.'))) return;
+
+    await this.loadState();
+    const entry = this.state.files[file.path];
+    const { hash } = await this.getFileHash(file);
+
+    // Skip if already synced and unchanged
+    if (entry && entry.hash === hash && !entry.deleted) {
+      return;
+    }
+
+    if (!entry) {
+      console.info(`Incremental sync: unseen file (new locally): ${file.path}`);
+    } else if (entry.deleted) {
+      console.info(`Incremental sync: restored file (previously marked as deleted): ${file.path}`);
+    } else if (entry.hash !== hash) {
+      console.info(`Incremental sync: modified file (hash mismatch): ${file.path}`);
+    }
+
+    console.log(`Incremental sync: syncing file: ${file.path}`);
+    const driveFileId = await this.syncFileCore(file, resolvedFolderId, entry);
+
+    this.state.files[file.path] = {
+      hash: hash,
+      driveFileId: driveFileId,
+      lastSyncTime: Date.now(),
+      deleted: false,
+    };
+
+    await this.saveState();
+  }
+
+  // Debounce sync of a single file to avoid spamming calls during typing
+  public debounceSyncFile(file: TFile, destinationFolderId: string): void {
+    if (!destinationFolderId || destinationFolderId.trim() === '' || destinationFolderId.trim() === '.') {
+      return;
+    }
+
+    const filePath = file.path;
+    const existingTimer = this.debounceTimers.get(filePath);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+
+    const timer = setTimeout(async () => {
+      this.debounceTimers.delete(filePath);
+      try {
+        const resolvedFolderId = await this.resolveDestinationFolderId(destinationFolderId);
+        if (resolvedFolderId) {
+          await this.syncSingleFile(file, resolvedFolderId);
+        }
+      } catch (err) {
+        console.error(`Incremental sync failed for ${filePath}:`, err);
+      }
+    }, 5000); // 5 seconds debounce delay
+
+    this.debounceTimers.set(filePath, timer);
+  }
+
+  // Handle a local deletion event immediately
+  public async handleLocalDeletion(path: string): Promise<void> {
+    const pathParts = path.split('/');
+    if (pathParts.some(part => part.startsWith('.'))) return;
+
+    // Cancel any pending debounced sync
+    const existingTimer = this.debounceTimers.get(path);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      this.debounceTimers.delete(path);
+    }
+
+    await this.loadState();
+    const entry = this.state.files[path];
+    if (entry && !entry.deleted) {
+      console.info(`Incremental sync: local deletion detected for ${path}`);
+      entry.deleted = true;
+      entry.lastSyncTime = Date.now();
+      await this.saveState();
+    }
+  }
+
+  // Handle a local rename/move event immediately
+  public async handleLocalRename(oldPath: string, file: TFile, destinationFolderId: string): Promise<void> {
+    if (!destinationFolderId || destinationFolderId.trim() === '' || destinationFolderId.trim() === '.') {
+      return;
+    }
+
+    // Cancel any pending debounced sync for the old path
+    const oldTimer = this.debounceTimers.get(oldPath);
+    if (oldTimer) {
+      clearTimeout(oldTimer);
+      this.debounceTimers.delete(oldPath);
+    }
+
+    console.info(`Incremental sync: file renamed/moved from ${oldPath} to ${file.path}`);
+    
+    // Mark old path as deleted in state
+    await this.handleLocalDeletion(oldPath);
+
+    // Trigger immediate sync for the new path
+    try {
+      const resolvedFolderId = await this.resolveDestinationFolderId(destinationFolderId);
+      if (resolvedFolderId) {
+        await this.syncSingleFile(file, resolvedFolderId);
+      }
+    } catch (err) {
+      console.error(`Incremental sync failed for renamed file ${file.path}:`, err);
+    }
+  }
+
   // Run the full sync operation
   public async runSync(destinationFolderId: string): Promise<void> {
     if (!destinationFolderId || destinationFolderId.trim() === '') {
@@ -101,37 +292,9 @@ export class SyncManager {
       return;
     }
 
-    // Validate and resolve/create destination folder ID
-    let resolvedFolderId = destinationFolderId;
-    const folderExists = await this.driveClient.folderExists(resolvedFolderId);
-    if (!folderExists) {
-      console.log(`Destination folder ID/name "${destinationFolderId}" not found on Google Drive. Resolving...`);
-      // Treat the configured ID as a folder name and search under 'root'
-      const existingFolder = await this.driveClient.findItem(destinationFolderId, 'root', true);
-      if (existingFolder) {
-        resolvedFolderId = existingFolder.id;
-        console.log(`Found existing folder "${destinationFolderId}" with ID: ${resolvedFolderId}`);
-      } else {
-        try {
-          resolvedFolderId = await this.driveClient.createFolder(destinationFolderId, 'root');
-          console.log(`Created new destination folder "${destinationFolderId}" with ID: ${resolvedFolderId}`);
-        } catch (createErr) {
-          const errDetails = createErr instanceof Error ? createErr.message : String(createErr);
-          const errMsg = `Failed to create destination folder "${destinationFolderId}" on Google Drive: ${errDetails}`;
-          new Notice(errMsg);
-          console.error(errMsg);
-          return;
-        }
-      }
-
-      // Update plugin settings with the resolved folder ID to avoid future lookups
-      const pluginAny = this.plugin as any;
-      if (pluginAny.settings) {
-        pluginAny.settings.destinationFolderId = resolvedFolderId;
-        if (typeof pluginAny.saveSettings === 'function') {
-          await pluginAny.saveSettings();
-        }
-      }
+    const resolvedFolderId = await this.resolveDestinationFolderId(destinationFolderId);
+    if (!resolvedFolderId) {
+      return;
     }
 
     new Notice("Google Drive sync started...");
@@ -156,7 +319,14 @@ export class SyncManager {
       const entry = this.state.files[file.path];
 
       try {
-        const { hash, content } = await this.getFileHash(file);
+        const { hash } = await this.getFileHash(file);
+
+        // Check if file is already in sync
+        if (entry && entry.hash === hash && !entry.deleted) {
+          console.debug(`Synced file (unchanged): ${file.path}`);
+          skipCount++;
+          continue;
+        }
 
         if (!entry) {
           console.info(`Unseen file (new locally): ${file.path}`);
@@ -166,48 +336,8 @@ export class SyncManager {
           console.info(`Modified file (hash mismatch): ${file.path}`);
         }
 
-        // Check if file is already in sync
-        if (entry && entry.hash === hash && !entry.deleted) {
-          console.debug(`Synced file (unchanged): ${file.path}`);
-          skipCount++;
-          continue;
-        }
-
         console.log(`Syncing file: ${file.path}`);
-        
-        // Resolve parent folder hierarchy
-        const fileName = pathParts.pop() || file.name;
-        
-        // Resolve folder hierarchy on Drive
-        const parentFolderId = await this.driveClient.resolveFolderHierarchy(pathParts, resolvedFolderId);
-
-        let driveFileId = entry?.driveFileId || '';
-
-        // If we have a cached file ID, verify it exists on Google Drive
-        if (driveFileId) {
-          const driveItem = await this.driveClient.findItem(fileName, parentFolderId, false);
-          if (driveItem) {
-            driveFileId = driveItem.id;
-          } else {
-            driveFileId = ''; // Reset to trigger creation if it was deleted on Drive
-          }
-        } else {
-          // Check if file exists on Drive with same name and parent
-          const driveItem = await this.driveClient.findItem(fileName, parentFolderId, false);
-          if (driveItem) {
-            driveFileId = driveItem.id;
-          }
-        }
-
-        if (driveFileId) {
-          // Update existing file content
-          await this.driveClient.updateFileContent(driveFileId, content);
-          console.log(`Updated file content on Drive: ${file.path}`);
-        } else {
-          // Create new file on Drive
-          driveFileId = await this.driveClient.createFile(fileName, parentFolderId, content);
-          console.log(`Created new file on Drive: ${file.path}`);
-        }
+        const driveFileId = await this.syncFileCore(file, resolvedFolderId, entry);
 
         // Update local sync state
         this.state.files[file.path] = {

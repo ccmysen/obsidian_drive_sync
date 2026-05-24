@@ -33,10 +33,36 @@ export default class LoggingPlugin extends Plugin {
       }
     );
 
-    console.debug('On-load');
+    // Register vault event listeners for incremental synchronization
     this.registerEvent(
-      this.app.metadataCache.on('changed', (file: TFile) => {
-        console.debug(`a file ${file.name} has changed size ${file.stat.size}`);
+      this.app.vault.on('modify', (file) => {
+        if (file instanceof TFile && this.settings.accessToken && this.settings.refreshToken) {
+          this.syncManager.debounceSyncFile(file, this.settings.destinationFolderId);
+        }
+      })
+    );
+
+    this.registerEvent(
+      this.app.vault.on('create', (file) => {
+        if (file instanceof TFile && this.settings.accessToken && this.settings.refreshToken) {
+          this.syncManager.debounceSyncFile(file, this.settings.destinationFolderId);
+        }
+      })
+    );
+
+    this.registerEvent(
+      this.app.vault.on('delete', (file) => {
+        if (this.settings.accessToken && this.settings.refreshToken) {
+          this.syncManager.handleLocalDeletion(file.path);
+        }
+      })
+    );
+
+    this.registerEvent(
+      this.app.vault.on('rename', (file, oldPath) => {
+        if (file instanceof TFile && this.settings.accessToken && this.settings.refreshToken) {
+          this.syncManager.handleLocalRename(oldPath, file, this.settings.destinationFolderId);
+        }
       })
     );
 

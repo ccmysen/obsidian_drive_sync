@@ -363,4 +363,113 @@ describe('SyncManager', () => {
     expect(mockPlugin.saveSettings).toHaveBeenCalled();
     expect(mockDriveClient.resolveFolderHierarchy).toHaveBeenCalledWith([], 'newCreatedFolderId');
   });
+
+  it('should debounce single file sync modification', async () => {
+    vi.useFakeTimers();
+
+    const file = {
+      path: 'debian.md',
+      name: 'debian.md',
+      extension: 'md',
+    };
+    mockFiles.push(file);
+    fileContents['debian.md'] = 'debian content';
+
+    mockDriveClient.resolveFolderHierarchy.mockResolvedValue('destId');
+    mockDriveClient.findItem.mockResolvedValue(null);
+    mockDriveClient.createFile.mockResolvedValue('newFileId');
+
+    syncManager.debounceSyncFile(file as any, 'destId');
+
+    // Should not have resolved hierarchy yet (debounced)
+    expect(mockDriveClient.resolveFolderHierarchy).not.toHaveBeenCalled();
+
+    // Fast-forward time
+    await vi.advanceTimersByTimeAsync(5000);
+
+    // Now it should have been synced
+    expect(mockDriveClient.resolveFolderHierarchy).toHaveBeenCalledWith([], 'destId');
+    expect(mockDriveClient.createFile).toHaveBeenCalledWith('debian.md', 'destId', 'debian content');
+
+    vi.useRealTimers();
+  });
+
+  it('should cancel timer and mark as deleted on handleLocalDeletion', async () => {
+    vi.useFakeTimers();
+
+    const file = {
+      path: 'del.md',
+      name: 'del.md',
+      extension: 'md',
+    };
+    
+    // Add to state first
+    const existingState = {
+      files: {
+        'del.md': {
+          hash: 'hash123',
+          driveFileId: 'driveId123',
+          lastSyncTime: Date.now(),
+          deleted: false,
+        },
+      },
+    };
+    adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] = JSON.stringify(existingState);
+
+    // Trigger a debounced sync, then immediately delete
+    syncManager.debounceSyncFile(file as any, 'destId');
+    await syncManager.handleLocalDeletion('del.md');
+
+    // Fast-forward time
+    await vi.advanceTimersByTimeAsync(5000);
+
+    // It should NOT run sync (since timer was cancelled)
+    expect(mockDriveClient.resolveFolderHierarchy).not.toHaveBeenCalled();
+
+    // Check state has been marked deleted
+    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] || '{}');
+    expect(savedState.files['del.md'].deleted).toBe(true);
+
+    vi.useRealTimers();
+  });
+
+  it('should handle local rename by deleting old path and syncing new path', async () => {
+    const file = {
+      path: 'new.md',
+      name: 'new.md',
+      extension: 'md',
+    };
+    mockFiles.push(file);
+    fileContents['new.md'] = 'new content';
+
+    // Add old file to state
+    const existingState = {
+      files: {
+        'old.md': {
+          hash: 'hash123',
+          driveFileId: 'driveId123',
+          lastSyncTime: Date.now(),
+          deleted: false,
+        },
+      },
+    };
+    adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] = JSON.stringify(existingState);
+
+    mockDriveClient.resolveFolderHierarchy.mockResolvedValue('destId');
+    mockDriveClient.findItem.mockResolvedValue(null);
+    mockDriveClient.createFile.mockResolvedValue('newFileId');
+
+    await syncManager.handleLocalRename('old.md', file as any, 'destId');
+
+    // Check old file state is deleted
+    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] || '{}');
+    expect(savedState.files['old.md'].deleted).toBe(true);
+
+    // Check new file was immediately synced
+    expect(mockDriveClient.createFile).toHaveBeenCalledWith('new.md', 'destId', 'new content');
+    // Verify new file exists in state with correct fields
+    const savedStatePost = JSON.parse(adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] || '{}');
+    expect(savedStatePost.files['new.md']).toBeDefined();
+    expect(savedStatePost.files['new.md'].driveFileId).toBe('newFileId');
+  });
 });
