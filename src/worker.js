@@ -141,35 +141,64 @@ export default {
         try {
           // Parse the JSON body payload passed by your Obsidian plugin
           const formData = await request.formData();
-   
-          // Extract the parameters using .get()
-          const code = formData.get("code");
-          const code_verifier = formData.get("code_verifier");
+          const grantType = formData.get("grant_type") || "authorization_code";
           const client_id = formData.get("client_id");
-          const redirect_uri = formData.get("redirect_uri");
 
-          trace.log(`Parsed parameters: code?=${!!code}, verifier?=${!!code_verifier}, client_id=${client_id}`);
+          trace.log(`Token grant type: ${grantType}, client_id: ${client_id}`);
 
-          // Basic validation
-          if (!code || !code_verifier || !client_id) {
-            trace.error("Missing required parameters (code, code_verifier, or client_id)");
+          let tokenRequestBody;
+
+          if (grantType === "refresh_token") {
+            const refresh_token = formData.get("refresh_token");
+            if (!refresh_token || !client_id) {
+              trace.error("Missing required parameters (refresh_token or client_id)");
+              responseStatus = 400;
+              return new Response(
+                JSON.stringify({ error: "Missing required parameters (refresh_token or client_id)" }), 
+                { status: 400, headers: { "Content-Type": "application/json" } }
+              );
+            }
+
+            tokenRequestBody = new URLSearchParams({
+              client_id: client_id,
+              client_secret: env.GOOGLE_CLIENT_SECRET,
+              refresh_token: refresh_token,
+              grant_type: "refresh_token"
+            });
+          } else if (grantType === "authorization_code") {
+            const code = formData.get("code");
+            const code_verifier = formData.get("code_verifier");
+            const redirect_uri = formData.get("redirect_uri");
+
+            trace.log(`Parsed authorization code parameters: code?=${!!code}, verifier?=${!!code_verifier}`);
+
+            if (!code || !code_verifier || !client_id) {
+              trace.error("Missing required parameters (code, code_verifier, or client_id)");
+              responseStatus = 400;
+              return new Response(
+                JSON.stringify({ error: "Missing required parameters (code, code_verifier, or client_id)" }), 
+                { status: 400, headers: { "Content-Type": "application/json" } }
+              );
+            }
+
+            tokenRequestBody = new URLSearchParams({
+              client_id: client_id,
+              client_secret: env.GOOGLE_CLIENT_SECRET,
+              code: code,
+              code_verifier: code_verifier,
+              grant_type: "authorization_code",
+              redirect_uri: redirect_uri
+            });
+          } else {
+            trace.error(`Unsupported grant type: ${grantType}`);
             responseStatus = 400;
             return new Response(
-              JSON.stringify({ error: "Missing required parameters (code, code_verifier, or client_id)" }), 
+              JSON.stringify({ error: `Unsupported grant type: ${grantType}` }), 
               { status: 400, headers: { "Content-Type": "application/json" } }
             );
           }
 
-          // Construct form data payload for Google API (Google expects application/x-www-form-urlencoded)
           const googleTokenUrl = "https://oauth2.googleapis.com/token";
-          const tokenRequestBody = new URLSearchParams({
-            client_id: client_id,
-            client_secret: env.GOOGLE_CLIENT_SECRET, // Injected securely from Cloudflare Env variables
-            code: code,
-            code_verifier: code_verifier,
-            grant_type: "authorization_code",
-            redirect_uri: redirect_uri // Matches what was used to request the authorization code
-          });
           trace.log("Forwarding request to Google Token endpoint");
 
           // Forward to Google's Token Endpoint
@@ -184,9 +213,9 @@ export default {
 
           const tokenData = await googleResponse.json();
           if (googleResponse.status === 200) {
-            trace.log("Token exchange successful");
+            trace.log("Token request successful");
           } else {
-            trace.error(`Token exchange failed. Response details: ${JSON.stringify(tokenData)}`);
+            trace.error(`Token request failed. Response details: ${JSON.stringify(tokenData)}`);
           }
 
           // Return Google's response back to your Obsidian plugin
@@ -199,10 +228,10 @@ export default {
           });
 
         } catch (error) {
-          trace.error("Failed handling token swap", error);
+          trace.error("Failed handling token request", error);
           responseStatus = 500;
           return new Response(
-            JSON.stringify({ error: "Server Error processing token swap", details: error.message }), 
+            JSON.stringify({ error: "Server Error processing token request", details: error.message }), 
             { status: 500, headers: { "Content-Type": "application/json" } }
           );
         }

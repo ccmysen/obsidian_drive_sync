@@ -62,7 +62,7 @@ export class GoogleDriveClient {
       console.log("Refreshing Google Drive API access token...");
     }
     const res = await requestUrl({
-      url: 'https://oauth2.googleapis.com/token',
+      url: 'https://redirect.ccmysen.workers.dev/token',
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
