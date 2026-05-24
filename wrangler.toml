@@ -1,0 +1,8 @@
+name = "redirect"
+main = "src/worker.js"
+compatibility_date = "2024-03-01"
+
+# Note on Secrets:
+# Do NOT place the sensitive GOOGLE_CLIENT_SECRET in this file.
+# Instead, add it to your deployed worker by running:
+#   npx wrangler secret put GOOGLE_CLIENT_SECRET
