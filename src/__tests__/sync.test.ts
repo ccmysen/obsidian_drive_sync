@@ -218,4 +218,89 @@ describe('SyncManager', () => {
     expect(mockDriveClient.createFile).not.toHaveBeenCalled();
     expect(mockDriveClient.updateFileContent).not.toHaveBeenCalled();
   });
+
+  it('should ignore files with hidden folders or files starting with a dot anywhere in the path', async () => {
+    // 1. Setup local files: normal, root hidden, nested hidden
+    mockFiles.push({
+      path: 'normal.md',
+      name: 'normal.md',
+      extension: 'md',
+    });
+    mockFiles.push({
+      path: '.hidden_at_root.md',
+      name: '.hidden_at_root.md',
+      extension: 'md',
+    });
+    mockFiles.push({
+      path: 'folder/.hidden_subfolder/test.md',
+      name: 'test.md',
+      extension: 'md',
+    });
+    mockFiles.push({
+      path: '.obsidian/plugins/test/main.js',
+      name: 'main.js',
+      extension: 'js',
+    });
+
+    fileContents['normal.md'] = 'normal';
+    fileContents['.hidden_at_root.md'] = 'hidden';
+    fileContents['folder/.hidden_subfolder/test.md'] = 'hidden';
+    fileContents['.obsidian/plugins/test/main.js'] = 'js';
+
+    // 2. Drive mocks
+    mockDriveClient.resolveFolderHierarchy.mockResolvedValue('driveFolderId');
+    mockDriveClient.findItem.mockResolvedValue(null);
+    mockDriveClient.createFile.mockResolvedValue('newFileId');
+
+    // 3. Run sync
+    await syncManager.runSync('destinationFolderId');
+
+    // 4. Assertions: only normal.md is synced
+    expect(mockDriveClient.createFile).toHaveBeenCalledTimes(1);
+    expect(mockDriveClient.createFile).toHaveBeenCalledWith('normal.md', 'driveFolderId', 'normal');
+  });
+
+  it('should resolve nested folder hierarchies on Google Drive', async () => {
+    // 1. Setup local nested file
+    mockFiles.push({
+      path: 'FolderA/FolderB/nested.md',
+      name: 'nested.md',
+      extension: 'md',
+    });
+    fileContents['FolderA/FolderB/nested.md'] = 'nested content';
+
+    // 2. Drive mocks
+    mockDriveClient.resolveFolderHierarchy.mockResolvedValue('leafFolderId');
+    mockDriveClient.findItem.mockResolvedValue(null);
+    mockDriveClient.createFile.mockResolvedValue('nestedFileId');
+
+    // 3. Run sync
+    await syncManager.runSync('destinationFolderId');
+
+    // 4. Assertions: hierarchy was resolved with path parts ['FolderA', 'FolderB']
+    expect(mockDriveClient.resolveFolderHierarchy).toHaveBeenCalledWith(['FolderA', 'FolderB'], 'destinationFolderId');
+    expect(mockDriveClient.createFile).toHaveBeenCalledWith('nested.md', 'leafFolderId', 'nested content');
+  });
+
+  it('should handle files at the vault root level', async () => {
+    // 1. Setup root file
+    mockFiles.push({
+      path: 'rootfile.md',
+      name: 'rootfile.md',
+      extension: 'md',
+    });
+    fileContents['rootfile.md'] = 'root content';
+
+    // 2. Drive mocks
+    mockDriveClient.resolveFolderHierarchy.mockResolvedValue('destinationFolderId');
+    mockDriveClient.findItem.mockResolvedValue(null);
+    mockDriveClient.createFile.mockResolvedValue('rootFileId');
+
+    // 3. Run sync
+    await syncManager.runSync('destinationFolderId');
+
+    // 4. Assertions: hierarchy resolves with empty parts array []
+    expect(mockDriveClient.resolveFolderHierarchy).toHaveBeenCalledWith([], 'destinationFolderId');
+    expect(mockDriveClient.createFile).toHaveBeenCalledWith('rootfile.md', 'destinationFolderId', 'root content');
+  });
 });
