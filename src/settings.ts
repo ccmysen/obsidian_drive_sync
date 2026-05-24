@@ -36,7 +36,7 @@ export class SampleSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Destination Folder ID')
-      .setDesc('The ID of the Google Drive folder to sync to')
+      .setDesc('The ID of the Google Drive folder to sync to (use \'root\' to sync to the main Google Drive directory)')
       .addText(text =>
         text
           .setPlaceholder('Enter Folder ID')

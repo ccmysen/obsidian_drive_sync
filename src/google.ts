@@ -90,6 +90,23 @@ export class GoogleDriveClient {
     }
   }
 
+  // Check if a folder ID exists and is a folder
+  public async folderExists(folderId: string): Promise<boolean> {
+    if (folderId === 'root') {
+      return true;
+    }
+    try {
+      const res = await this.request({
+        url: `https://www.googleapis.com/drive/v3/files/${folderId}?fields=id,mimeType,trashed`,
+        method: 'GET',
+      });
+      const data = res.json;
+      return data && data.mimeType === 'application/vnd.google-apps.folder' && !data.trashed;
+    } catch (e) {
+      return false;
+    }
+  }
+
   // Find a file/folder by name and parent folder ID
   public async findItem(name: string, parentId: string, isFolder = false): Promise<any | null> {
     const mimeQuery = isFolder ? "and mimeType = 'application/vnd.google-apps.folder'" : "and mimeType != 'application/vnd.google-apps.folder'";
@@ -106,6 +123,7 @@ export class GoogleDriveClient {
 
   // Create a folder under a parent folder
   public async createFolder(name: string, parentId: string): Promise<string> {
+    console.log(`Creating folder on Google Drive: "${name}" under parent: ${parentId}`);
     const res = await this.request({
       url: 'https://www.googleapis.com/drive/v3/files',
       method: 'POST',
@@ -119,7 +137,9 @@ export class GoogleDriveClient {
       }),
     });
 
-    return res.json.id;
+    const folderId = res.json.id;
+    console.log(`Successfully created folder "${name}" with ID: ${folderId}`);
+    return folderId;
   }
 
   // Recreate local folder path hierarchically on Google Drive under rootFolderId
@@ -131,6 +151,7 @@ export class GoogleDriveClient {
       if (!part) continue;
       const existingFolder = await this.findItem(part, currentParentId, true);
       if (existingFolder) {
+        console.log(`Found existing folder: "${part}" (ID: ${existingFolder.id})`);
         currentParentId = existingFolder.id;
       } else {
         currentParentId = await this.createFolder(part, currentParentId);

@@ -71,7 +71,7 @@ The comprehensive testing strategy, covering both manual testing inside a real O
 This plugin implements a lightweight, mobile-safe synchronization mechanism that automatically pushes local vault changes to a specified Google Drive destination folder on plugin load (`onload`).
 
 ### 1. State Tracking (`sync_state.json`)
-The sync state is cached locally in `.obsidian/plugins/logging-plugin/sync_state.json` to prevent unnecessary uploads:
+The sync state is cached locally in `.obsidian/plugins/<plugin-id>/sync_state.json` (or the corresponding plugin directory) to prevent unnecessary uploads:
 - **Hashing**: Computes MD5 hashes of all local files (using string hashing for text/markdown files and binary word-array conversion for assets).
 - **Metadata**: Each entry maps a file path to its `hash`, its remote `driveFileId`, a `lastSyncTime` timestamp, and a `deleted` status flag.
 - **Incremental Saves**: The state file is updated and saved to disk immediately after each file successfully syncs, protecting against data loss if the sync operation is interrupted.

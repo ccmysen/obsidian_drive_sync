@@ -63,6 +63,7 @@ describe('SyncManager', () => {
 
     // Mock GoogleDriveClient
     mockDriveClient = {
+      folderExists: vi.fn().mockResolvedValue(true),
       findItem: vi.fn(),
       createFolder: vi.fn(),
       resolveFolderHierarchy: vi.fn(),
@@ -302,5 +303,64 @@ describe('SyncManager', () => {
     // 4. Assertions: hierarchy resolves with empty parts array []
     expect(mockDriveClient.resolveFolderHierarchy).toHaveBeenCalledWith([], 'destinationFolderId');
     expect(mockDriveClient.createFile).toHaveBeenCalledWith('rootfile.md', 'destinationFolderId', 'root content');
+  });
+
+  it('should skip sync if destinationFolderId is invalid or dot "."', async () => {
+    mockFiles.push({
+      path: 'rootfile.md',
+      name: 'rootfile.md',
+      extension: 'md',
+    });
+    fileContents['rootfile.md'] = 'root content';
+
+    await syncManager.runSync('.');
+
+    expect(mockDriveClient.resolveFolderHierarchy).not.toHaveBeenCalled();
+    expect(mockDriveClient.createFile).not.toHaveBeenCalled();
+  });
+
+  it('should resolve existing folder by name if destinationFolderId does not exist by ID', async () => {
+    mockFiles.push({
+      path: 'rootfile.md',
+      name: 'rootfile.md',
+      extension: 'md',
+    });
+    fileContents['rootfile.md'] = 'root content';
+
+    mockDriveClient.folderExists.mockResolvedValueOnce(false);
+    mockDriveClient.findItem.mockResolvedValueOnce({ id: 'resolvedRealFolderId' });
+    mockDriveClient.resolveFolderHierarchy.mockResolvedValue('resolvedRealFolderId');
+
+    mockPlugin.settings = { destinationFolderId: 'MyFolder' };
+    mockPlugin.saveSettings = vi.fn().mockResolvedValue(undefined);
+
+    await syncManager.runSync('MyFolder');
+
+    expect(mockPlugin.settings.destinationFolderId).toBe('resolvedRealFolderId');
+    expect(mockPlugin.saveSettings).toHaveBeenCalled();
+    expect(mockDriveClient.resolveFolderHierarchy).toHaveBeenCalledWith([], 'resolvedRealFolderId');
+  });
+
+  it('should create new folder if destinationFolderId does not exist by ID or name', async () => {
+    mockFiles.push({
+      path: 'rootfile.md',
+      name: 'rootfile.md',
+      extension: 'md',
+    });
+    fileContents['rootfile.md'] = 'root content';
+
+    mockDriveClient.folderExists.mockResolvedValueOnce(false);
+    mockDriveClient.findItem.mockResolvedValueOnce(null);
+    mockDriveClient.createFolder.mockResolvedValueOnce('newCreatedFolderId');
+    mockDriveClient.resolveFolderHierarchy.mockResolvedValue('newCreatedFolderId');
+
+    mockPlugin.settings = { destinationFolderId: 'NewFolder' };
+    mockPlugin.saveSettings = vi.fn().mockResolvedValue(undefined);
+
+    await syncManager.runSync('NewFolder');
+
+    expect(mockPlugin.settings.destinationFolderId).toBe('newCreatedFolderId');
+    expect(mockPlugin.saveSettings).toHaveBeenCalled();
+    expect(mockDriveClient.resolveFolderHierarchy).toHaveBeenCalledWith([], 'newCreatedFolderId');
   });
 });

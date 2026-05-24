@@ -7,61 +7,100 @@
  *
  * Learn more at https://developers.cloudflare.com/workers/
  */
+
+class RequestTrace {
+  constructor(id, method, url) {
+    this.id = id;
+    this.method = method;
+    this.url = url;
+    this.startTime = Date.now();
+    this.steps = [];
+  }
+
+  log(message) {
+    const elapsed = Date.now() - this.startTime;
+    this.steps.push(`[+${elapsed}ms] ${message}`);
+  }
+
+  error(message, err) {
+    const elapsed = Date.now() - this.startTime;
+    const errDetails = err ? `: ${err.message || err}` : "";
+    this.steps.push(`[+${elapsed}ms] ERROR: ${message}${errDetails}`);
+  }
+
+  flush(status = 200) {
+    const duration = Date.now() - this.startTime;
+    console.log(
+      `[TRACE] ID: ${this.id} | ${this.method} ${this.url} | Status: ${status} | Duration: ${duration}ms\n` +
+      this.steps.map(step => `  ${step}`).join("\n")
+    );
+  }
+}
+
 export default {
   // Inside your secure backend API environment (e.g., /api/token)
   async fetch(request, env, ctx) {
-    const incomingUrl = new URL(request.url);
-    const path = incomingUrl.pathname;
-    const searchParams = incomingUrl.searchParams;
+    const requestId = request.headers.get("cf-ray") || Math.random().toString(36).substring(2, 10);
+    const trace = new RequestTrace(requestId, request.method, request.url);
+    let responseStatus = 200;
 
-    console.info('Start fetch')
+    try {
+      const incomingUrl = new URL(request.url);
+      const path = incomingUrl.pathname;
+      const searchParams = incomingUrl.searchParams;
 
-    // Route 1: /redirect
-    if (path === "/redirect") {
-      console.info('Redirect')
-      const pluginId = searchParams.get("state") || "obsidian_drive_sync";
-      const targetBase = `obsidian://${pluginId}`;
-      const destinationUrl = `${targetBase}${incomingUrl.search}`;
-      
-      return new Response(null, {
-        status: 301,
-        headers: {
-          "Location": destinationUrl,
-          "Cache-Control": "no-cache"
-        }
-      });
-    }
+      trace.log(`Routing path: ${path}`);
 
-    // Route 2: /display
-    else if (path === "/display") {
-      console.info("Display")
-      const errorParam = searchParams.get("error");
-      const codeParam = searchParams.get("code") || "";
-      const pluginId = searchParams.get("state") || "obsidian_drive_sync";
-      const displayName = pluginId
-        .split(/[_-]/)
-        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-        .join(" ");
-
-      let contentHtml = "";
-
-      // Conditional UI logic based on parameters
-      if (errorParam) {
-        contentHtml = `
-          <div class="error-box">
-            <strong>Error:</strong> ${escapeHtml(errorParam)}
-          </div>
-        `;
-      } else {
-        contentHtml = `
-          <label for="code-input">Authorization Code:</label>
-          <input type="text" id="code-input" value="${escapeHtml(codeParam)}" readonly onclick="navigator.clipboard.writeText()">
-          <p class="hint">Click inside the box to select and copy the code.</p>
-        `;
+      // Route 1: /redirect
+      if (path === "/redirect") {
+        trace.log("Handling /redirect request");
+        const pluginId = searchParams.get("state") || "obsidian_drive_sync";
+        const targetBase = `obsidian://${pluginId}`;
+        const destinationUrl = `${targetBase}${incomingUrl.search}`;
+        trace.log(`Redirecting to: ${destinationUrl}`);
+        
+        responseStatus = 301;
+        return new Response(null, {
+          status: 301,
+          headers: {
+            "Location": destinationUrl,
+            "Cache-Control": "no-cache"
+          }
+        });
       }
 
-      // Return a clean, styled HTML page
-      const html = `<!DOCTYPE html>
+      // Route 2: /display
+      else if (path === "/display") {
+        trace.log("Handling /display request");
+        const errorParam = searchParams.get("error");
+        const codeParam = searchParams.get("code") || "";
+        const pluginId = searchParams.get("state") || "obsidian_drive_sync";
+        const displayName = pluginId
+          .split(/[_-]/)
+          .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+          .join(" ");
+
+        let contentHtml = "";
+
+        // Conditional UI logic based on parameters
+        if (errorParam) {
+          trace.log(`Displaying error page: ${errorParam}`);
+          contentHtml = `
+            <div class="error-box">
+              <strong>Error:</strong> ${escapeHtml(errorParam)}
+            </div>
+          `;
+        } else {
+          trace.log("Displaying auth code page");
+          contentHtml = `
+            <label for="code-input">Authorization Code:</label>
+            <input type="text" id="code-input" value="${escapeHtml(codeParam)}" readonly onclick="navigator.clipboard.writeText()">
+            <p class="hint">Click inside the box to select and copy the code.</p>
+          `;
+        }
+
+        // Return a clean, styled HTML page
+        const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -83,87 +122,107 @@ export default {
 </body>
 </html>`;
 
-      return new Response(html, {
-        headers: { "Content-Type": "text/html;charset=UTF-8" }
-      });
-    }
-
-    // Route 3: /token redirect
-    else if (path === "/token") {
-      console.info(`Token ${request.method}`);
-      // Only allow POST requests for exchanging tokens
-      if (request.method !== "POST") {
-        console.error("Wrong Method");
-        return new Response("Method Not Allowed", { status: 405 });
+        responseStatus = 200;
+        return new Response(html, {
+          headers: { "Content-Type": "text/html;charset=UTF-8" }
+        });
       }
 
-      try {
-        // Parse the JSON body payload passed by your Obsidian plugin
-        const formData = await request.formData();
- 
-        // Extract the parameters using .get()
-        const code = formData.get("code");
-        const code_verifier = formData.get("code_verifier");
-        const client_id = formData.get("client_id");
-        const redirect_uri = formData.get("redirect_uri");
-
-        if (!code || !code_verifier || !client_id) {
-          return new Response("Missing parameters", { status: 400 });
+      // Route 3: /token redirect
+      else if (path === "/token") {
+        trace.log("Handling /token request");
+        // Only allow POST requests for exchanging tokens
+        if (request.method !== "POST") {
+          trace.error(`Method Not Allowed: ${request.method}`);
+          responseStatus = 405;
+          return new Response("Method Not Allowed", { status: 405 });
         }
-        console.info(`Start request ${code} for client_id ${client_id}`);
 
-        // Basic validation
-        if (!code || !code_verifier || !client_id) {
-          console.error(`Missing Parameters`);
+        try {
+          // Parse the JSON body payload passed by your Obsidian plugin
+          const formData = await request.formData();
+   
+          // Extract the parameters using .get()
+          const code = formData.get("code");
+          const code_verifier = formData.get("code_verifier");
+          const client_id = formData.get("client_id");
+          const redirect_uri = formData.get("redirect_uri");
+
+          trace.log(`Parsed parameters: code?=${!!code}, verifier?=${!!code_verifier}, client_id=${client_id}`);
+
+          // Basic validation
+          if (!code || !code_verifier || !client_id) {
+            trace.error("Missing required parameters (code, code_verifier, or client_id)");
+            responseStatus = 400;
+            return new Response(
+              JSON.stringify({ error: "Missing required parameters (code, code_verifier, or client_id)" }), 
+              { status: 400, headers: { "Content-Type": "application/json" } }
+            );
+          }
+
+          // Construct form data payload for Google API (Google expects application/x-www-form-urlencoded)
+          const googleTokenUrl = "https://oauth2.googleapis.com/token";
+          const tokenRequestBody = new URLSearchParams({
+            client_id: client_id,
+            client_secret: env.GOOGLE_CLIENT_SECRET, // Injected securely from Cloudflare Env variables
+            code: code,
+            code_verifier: code_verifier,
+            grant_type: "authorization_code",
+            redirect_uri: redirect_uri // Matches what was used to request the authorization code
+          });
+          trace.log("Forwarding request to Google Token endpoint");
+
+          // Forward to Google's Token Endpoint
+          const googleResponse = await fetch(googleTokenUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: tokenRequestBody.toString()
+          });
+
+          responseStatus = googleResponse.status;
+          trace.log(`Received Google response status: ${googleResponse.status}`);
+
+          const tokenData = await googleResponse.json();
+          if (googleResponse.status === 200) {
+            trace.log("Token exchange successful");
+          } else {
+            trace.error(`Token exchange failed. Response details: ${JSON.stringify(tokenData)}`);
+          }
+
+          // Return Google's response back to your Obsidian plugin
+          return new Response(JSON.stringify(tokenData), {
+            status: googleResponse.status,
+            headers: { 
+              "Content-Type": "application/json",
+              "Access-Control-Allow-Origin": "*" // Allow Obsidian to receive this response cross-origin
+            }
+          });
+
+        } catch (error) {
+          trace.error("Failed handling token swap", error);
+          responseStatus = 500;
           return new Response(
-            JSON.stringify({ error: "Missing required parameters (code, code_verifier, or client_id)" }), 
-            { status: 400, headers: { "Content-Type": "application/json" } }
+            JSON.stringify({ error: "Server Error processing token swap", details: error.message }), 
+            { status: 500, headers: { "Content-Type": "application/json" } }
           );
         }
-
-        // Construct form data payload for Google API (Google expects application/x-www-form-urlencoded)
-        const googleTokenUrl = "https://oauth2.googleapis.com/token";
-        const tokenRequestBody = new URLSearchParams({
-          client_id: client_id,
-          client_secret: env.GOOGLE_CLIENT_SECRET, // Injected securely from Cloudflare Env variables
-          code: code,
-          code_verifier: code_verifier,
-          grant_type: "authorization_code",
-          redirect_uri: redirect_uri // Matches what was used to request the authorization code
-        });
-        console.info(`Token Request ${tokenRequestBody.toString()}`);
-
-        // Forward to Google's Token Endpoint
-        const googleResponse = await fetch(googleTokenUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: tokenRequestBody.toString()
-        });
-
-        const tokenData = await googleResponse.json();
-        console.info(tokenData);
-
-        // Return Google's response back to your Obsidian plugin
-        return new Response(JSON.stringify(tokenData), {
-          status: googleResponse.status,
-          headers: { 
-            "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": "*" // Allow Obsidian to receive this response cross-origin
-          }
-        });
-
-      } catch (error) {
-        console.error(`Failed Request ${error.message}`);
-        return new Response(
-          JSON.stringify({ error: "Server Error processing token swap", details: error.message }), 
-          { status: 500, headers: { "Content-Type": "application/json" } }
-        );
       }
+
+      // Fallback for any other path (e.g., root /)
+      trace.log(`Path not found: ${path}`);
+      responseStatus = 404;
+      return new Response("Not Found", { status: 404 });
+
+    } catch (err) {
+      trace.error("Unhandled request error", err);
+      responseStatus = 500;
+      return new Response(
+        JSON.stringify({ error: "Internal Server Error", details: err.message }),
+        { status: 500, headers: { "Content-Type": "application/json" } }
+      );
+    } finally {
+      trace.flush(responseStatus);
     }
-
-
-    // Fallback for any other path (e.g., root /)
-    return new Response("Not Found", { status: 404 });
   }
 };
 

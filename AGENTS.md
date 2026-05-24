@@ -262,14 +262,22 @@ const pluginDir = (this.plugin.manifest as any).dir || `${this.app.vault.configD
 Under `"noUncheckedIndexedAccess": true`, accessing arrays by index or records by key returns type `T | undefined`. Always provide fallback values (e.g., `?? 0` or `|| '{}'`) to satisfy TypeScript compiler checks.
 
 ### 4. No Client-Side Client Secrets
-Never hardcode or transmit a `client_secret` from the client-side Obsidian plugin. Public client IDs (using PKCE) do not require a secret to refresh tokens, and the token exchange endpoint handles the secret securely on the server/worker side.
+Never hardcode or transmit a `client_secret` from the client-side Obsidian plugin (e.g., in `main.ts` or `google.ts`). Public clients using authorization code flow with PKCE do not need a client secret. Any token exchange that requires a client secret must route through the Cloudflare Worker (`worker.js`), which injects the `client_secret` securely from environment variables (`env.GOOGLE_CLIENT_SECRET`).
 
-### 5. Recursive Hidden Directory Exclusions
+### 5. Dynamic OAuth Redirection Routing
+Do not hardcode specific plugin IDs (like `logging-plugin`) in the Cloudflare Worker redirector (`worker.js`) or redirect URLs. Instead:
+- Pass the dynamic plugin ID via the `state` parameter during authorization initiation.
+- The redirector worker must extract the `state` query parameter from the callback URL and dynamically construct the deep-link redirect target (e.g. `obsidian://oauth?state=${state}&...` or similar).
+
+### 6. Recursive Hidden Directory Exclusions
 When excluding hidden directories or dotfiles, check all path segments rather than just the root string prefix:
 ```ts
 const pathParts = file.path.split('/');
 if (pathParts.some(part => part.startsWith('.'))) continue;
 ```
+
+### 7. Google Drive Destination Folder Validation
+Never allow `.` (dot) or empty/whitespace values as a valid Google Drive destination folder ID. Google Drive uses unique alphanumeric IDs and uses `'root'` as the alias to refer to the root directory. Passing `.` as a parent folder ID in query parameters (such as `'fileId' in parents`) will cause Google's API to crash with a `404 File not found: .` error. Always validate the input and direct the user to use `'root'` for root synchronization.
 
 ## References
 

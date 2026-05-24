@@ -89,9 +89,49 @@ export class SyncManager {
 
   // Run the full sync operation
   public async runSync(destinationFolderId: string): Promise<void> {
-    if (!destinationFolderId) {
+    if (!destinationFolderId || destinationFolderId.trim() === '') {
       new Notice("Google Drive destination folder ID is not configured. Skipping sync.");
       return;
+    }
+
+    if (destinationFolderId.trim() === '.') {
+      const errorMsg = "Google Drive destination folder ID is invalid ('.'). To sync to the root of your Google Drive, please set the folder ID to 'root' in the settings.";
+      new Notice(errorMsg);
+      console.error(errorMsg);
+      return;
+    }
+
+    // Validate and resolve/create destination folder ID
+    let resolvedFolderId = destinationFolderId;
+    const folderExists = await this.driveClient.folderExists(resolvedFolderId);
+    if (!folderExists) {
+      console.log(`Destination folder ID/name "${destinationFolderId}" not found on Google Drive. Resolving...`);
+      // Treat the configured ID as a folder name and search under 'root'
+      const existingFolder = await this.driveClient.findItem(destinationFolderId, 'root', true);
+      if (existingFolder) {
+        resolvedFolderId = existingFolder.id;
+        console.log(`Found existing folder "${destinationFolderId}" with ID: ${resolvedFolderId}`);
+      } else {
+        try {
+          resolvedFolderId = await this.driveClient.createFolder(destinationFolderId, 'root');
+          console.log(`Created new destination folder "${destinationFolderId}" with ID: ${resolvedFolderId}`);
+        } catch (createErr) {
+          const errDetails = createErr instanceof Error ? createErr.message : String(createErr);
+          const errMsg = `Failed to create destination folder "${destinationFolderId}" on Google Drive: ${errDetails}`;
+          new Notice(errMsg);
+          console.error(errMsg);
+          return;
+        }
+      }
+
+      // Update plugin settings with the resolved folder ID to avoid future lookups
+      const pluginAny = this.plugin as any;
+      if (pluginAny.settings) {
+        pluginAny.settings.destinationFolderId = resolvedFolderId;
+        if (typeof pluginAny.saveSettings === 'function') {
+          await pluginAny.saveSettings();
+        }
+      }
     }
 
     new Notice("Google Drive sync started...");
@@ -139,7 +179,7 @@ export class SyncManager {
         const fileName = pathParts.pop() || file.name;
         
         // Resolve folder hierarchy on Drive
-        const parentFolderId = await this.driveClient.resolveFolderHierarchy(pathParts, destinationFolderId);
+        const parentFolderId = await this.driveClient.resolveFolderHierarchy(pathParts, resolvedFolderId);
 
         let driveFileId = entry?.driveFileId || '';
 
