@@ -17,9 +17,9 @@ export default class LoggingPlugin extends Plugin {
     await this.loadSettings();
     this.initDrive();
 
-    // Register protocol handler for obsidian://logging-plugin?code=...
+    // Register protocol handler for obsidian://obsidian_drive_sync?code=...
     this.registerObsidianProtocolHandler(
-      'logging-plugin',
+      'obsidian_drive_sync',
       async (data: ObsidianProtocolData) => {
         if (data.error) {
           const errorMsg = `Google Drive Auth Error: ${data.error}`;

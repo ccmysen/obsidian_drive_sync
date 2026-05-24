@@ -1,5 +1,5 @@
 {
-	"name": "logging-plugin",
+	"name": "obsidian-drive-sync",
 	"version": "1.0.0",
 	"description": "Logging Plugin",
 	"main": "main.js",

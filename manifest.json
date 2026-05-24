@@ -1,6 +1,6 @@
 {
-	"id": "logging-plugin",
-	"name": "Logging Plugin",
+	"id": "obsidian_drive_sync",
+	"name": "Obsidian Drive Sync",
 	"version": "1.0.0",
 	"minAppVersion": "0.15.0",
 	"description": "Demonstrates some of the capabilities of the Obsidian API.",

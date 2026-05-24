@@ -9,7 +9,7 @@ vi.mock('obsidian', () => {
       constructor(public message: string) {}
     },
     Plugin: class {
-      manifest = { id: 'logging-plugin' };
+      manifest = { id: 'obsidian_drive_sync' };
     },
     TFile: class {},
   };
@@ -57,7 +57,7 @@ describe('SyncManager', () => {
     // Mock Plugin
     mockPlugin = {
       manifest: {
-        id: 'logging-plugin',
+        id: 'obsidian_drive_sync',
       },
     };
 
@@ -89,7 +89,7 @@ describe('SyncManager', () => {
         },
       },
     };
-    adapterFiles['.obsidian/plugins/logging-plugin/sync_state.json'] = JSON.stringify(existingState);
+    adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] = JSON.stringify(existingState);
 
     await syncManager.loadState();
     expect(syncManager['state']).toEqual(existingState);
@@ -119,7 +119,7 @@ describe('SyncManager', () => {
     expect(mockDriveClient.createFile).toHaveBeenCalledWith('test.md', 'driveFolderId', content);
     
     // State is updated and written to disk
-    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/logging-plugin/sync_state.json'] || '{}');
+    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] || '{}');
     expect(savedState.files['test.md']).toBeDefined();
     expect(savedState.files['test.md'].hash).toBe(expectedHash);
     expect(savedState.files['test.md'].driveFileId).toBe('newDriveFileId');
@@ -147,7 +147,7 @@ describe('SyncManager', () => {
         },
       },
     };
-    adapterFiles['.obsidian/plugins/logging-plugin/sync_state.json'] = JSON.stringify(existingState);
+    adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] = JSON.stringify(existingState);
 
     // 2. Run sync
     await syncManager.runSync('destinationFolderId');
@@ -179,7 +179,7 @@ describe('SyncManager', () => {
         },
       },
     };
-    adapterFiles['.obsidian/plugins/logging-plugin/sync_state.json'] = JSON.stringify(existingState);
+    adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] = JSON.stringify(existingState);
 
     // 2. Google Drive mocks
     mockDriveClient.resolveFolderHierarchy.mockResolvedValue('driveFolderId');
@@ -191,7 +191,7 @@ describe('SyncManager', () => {
     // 4. Assertions
     expect(mockDriveClient.updateFileContent).toHaveBeenCalledWith('id123', newContent);
     
-    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/logging-plugin/sync_state.json'] || '{}');
+    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] || '{}');
     expect(savedState.files['test.md'].hash).toBe(newHash);
   });
 
@@ -207,13 +207,13 @@ describe('SyncManager', () => {
         },
       },
     };
-    adapterFiles['.obsidian/plugins/logging-plugin/sync_state.json'] = JSON.stringify(existingState);
+    adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] = JSON.stringify(existingState);
 
     // 2. Run sync
     await syncManager.runSync('destinationFolderId');
 
     // 3. Assertions
-    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/logging-plugin/sync_state.json'] || '{}');
+    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] || '{}');
     expect(savedState.files['deleted_file.md'].deleted).toBe(true);
     expect(mockDriveClient.createFile).not.toHaveBeenCalled();
     expect(mockDriveClient.updateFileContent).not.toHaveBeenCalled();
