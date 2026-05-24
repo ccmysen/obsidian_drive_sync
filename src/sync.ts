@@ -361,14 +361,18 @@ export class SyncManager {
     const localFilePaths = new Set<string>();
 
     let uploadCount = 0;
-    let skipCount = 0;
+    let skipMd5MatchCount = 0;
+    let excludedDotfilesCount = 0;
     let failCount = 0;
 
     // 1. Scan and upload/update local files
     for (const file of localFiles) {
       const pathParts = file.path.split('/');
       // Exclude hidden files or folders (e.g. .obsidian config files or nested dotfolders)
-      if (pathParts.some(part => part.startsWith('.'))) continue;
+      if (pathParts.some(part => part.startsWith('.'))) {
+        excludedDotfilesCount++;
+        continue;
+      }
 
       localFilePaths.add(file.path);
       const entry = this.state.files[file.path];
@@ -381,7 +385,7 @@ export class SyncManager {
           if (DEBUG_LOGGING) {
             console.debug(`Synced file (unchanged): ${file.path}`);
           }
-          skipCount++;
+          skipMd5MatchCount++;
           continue;
         }
 
@@ -432,7 +436,7 @@ export class SyncManager {
       }
     }
 
-    const summary = `Sync complete! Synced: ${uploadCount}, Skipped: ${skipCount}, Deletions logged: ${deleteMarkCount}, Failed: ${failCount}`;
+    const summary = `Sync complete! Synced: ${uploadCount}, Unchanged (MD5 match): ${skipMd5MatchCount}, Excluded (dotfiles): ${excludedDotfilesCount}, Deletions logged: ${deleteMarkCount}, Failed: ${failCount}`;
     if (DEBUG_LOGGING) {
       console.log(summary);
     }
