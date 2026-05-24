@@ -24,7 +24,8 @@ export class SyncManager {
     this.app = app;
     this.plugin = plugin;
     this.driveClient = driveClient;
-    this.stateFilePath = `${this.app.vault.configDir}/plugins/${this.plugin.manifest.id}/sync_state.json`;
+    const pluginDir = (this.plugin.manifest as any).dir || `${this.app.vault.configDir}/plugins/${this.plugin.manifest.id}`;
+    this.stateFilePath = `${pluginDir}/sync_state.json`;
   }
 
   // Load state from local file
