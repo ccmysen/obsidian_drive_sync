@@ -108,8 +108,9 @@ export class SyncManager {
 
     // 1. Scan and upload/update local files
     for (const file of localFiles) {
-      // Exclude hidden files or folders (e.g. .obsidian config files)
-      if (file.path.startsWith('.')) continue;
+      const pathParts = file.path.split('/');
+      // Exclude hidden files or folders (e.g. .obsidian config files or nested dotfolders)
+      if (pathParts.some(part => part.startsWith('.'))) continue;
 
       localFilePaths.add(file.path);
       const entry = this.state.files[file.path];
@@ -135,7 +136,6 @@ export class SyncManager {
         console.log(`Syncing file: ${file.path}`);
         
         // Resolve parent folder hierarchy
-        const pathParts = file.path.split('/');
         const fileName = pathParts.pop() || file.name;
         
         // Resolve folder hierarchy on Drive
