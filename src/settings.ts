@@ -7,6 +7,7 @@ export interface LoggingPluginSettings {
   destinationFolderId: string;
   manualAuth: boolean;
   codeVerifier: string;
+  syncIntervalMinutes: number;
 }
 
 export const DEFAULT_SETTINGS: LoggingPluginSettings = {
@@ -15,6 +16,7 @@ export const DEFAULT_SETTINGS: LoggingPluginSettings = {
   destinationFolderId: '',
   manualAuth: false,
   codeVerifier: '',
+  syncIntervalMinutes: 15,
 };
 
 export class SampleSettingTab extends PluginSettingTab {
@@ -43,6 +45,20 @@ export class SampleSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.destinationFolderId)
           .onChange(async value => {
             this.plugin.settings.destinationFolderId = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Sync Interval (Minutes)')
+      .setDesc('How often to run a full sync automatically. Set to 0 to disable periodic sync.')
+      .addText(text =>
+        text
+          .setPlaceholder('15')
+          .setValue(String(this.plugin.settings.syncIntervalMinutes))
+          .onChange(async value => {
+            const num = parseInt(value, 10);
+            this.plugin.settings.syncIntervalMinutes = isNaN(num) ? 0 : num;
             await this.plugin.saveSettings();
           })
       );

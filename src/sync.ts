@@ -280,6 +280,11 @@ export class SyncManager {
 
   // Run the full sync operation
   public async runSync(destinationFolderId: string): Promise<void> {
+    const pluginAny = this.plugin as any;
+    if (pluginAny) {
+      pluginAny.lastSyncTime = Date.now();
+    }
+
     if (!destinationFolderId || destinationFolderId.trim() === '') {
       new Notice("Google Drive destination folder ID is not configured. Skipping sync.");
       return;

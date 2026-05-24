@@ -11,6 +11,7 @@ export default class LoggingPlugin extends Plugin {
   settings: LoggingPluginSettings;
   driveClient: GoogleDriveClient;
   syncManager: SyncManager;
+  public lastSyncTime = Date.now();
 
   async onload() {
     await this.loadSettings();
@@ -75,6 +76,23 @@ export default class LoggingPlugin extends Plugin {
           .catch(err => console.error("Onload sync failed", err));
       }, 2000);
     }
+
+    // Start periodic sync check (runs every minute)
+    this.registerInterval(
+      window.setInterval(() => {
+        const intervalMinutes = this.settings.syncIntervalMinutes;
+        if (intervalMinutes > 0) {
+          const elapsedMs = Date.now() - this.lastSyncTime;
+          if (elapsedMs >= intervalMinutes * 60 * 1000) {
+            if (this.settings.accessToken && this.settings.refreshToken && this.settings.destinationFolderId) {
+              console.info("Periodic sync: starting scheduled full sync...");
+              this.syncManager.runSync(this.settings.destinationFolderId)
+                .catch(err => console.error("Periodic sync failed", err));
+            }
+          }
+        }
+      }, 60 * 1000)
+    );
   }
 
   async exchangeCodeForTokens(code: string) {
