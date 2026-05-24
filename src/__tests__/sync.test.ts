@@ -119,7 +119,7 @@ describe('SyncManager', () => {
     expect(mockDriveClient.createFile).toHaveBeenCalledWith('test.md', 'driveFolderId', content);
     
     // State is updated and written to disk
-    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/logging-plugin/sync_state.json']);
+    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/logging-plugin/sync_state.json'] || '{}');
     expect(savedState.files['test.md']).toBeDefined();
     expect(savedState.files['test.md'].hash).toBe(expectedHash);
     expect(savedState.files['test.md'].driveFileId).toBe('newDriveFileId');
@@ -191,7 +191,7 @@ describe('SyncManager', () => {
     // 4. Assertions
     expect(mockDriveClient.updateFileContent).toHaveBeenCalledWith('id123', newContent);
     
-    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/logging-plugin/sync_state.json']);
+    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/logging-plugin/sync_state.json'] || '{}');
     expect(savedState.files['test.md'].hash).toBe(newHash);
   });
 
@@ -213,7 +213,7 @@ describe('SyncManager', () => {
     await syncManager.runSync('destinationFolderId');
 
     // 3. Assertions
-    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/logging-plugin/sync_state.json']);
+    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/logging-plugin/sync_state.json'] || '{}');
     expect(savedState.files['deleted_file.md'].deleted).toBe(true);
     expect(mockDriveClient.createFile).not.toHaveBeenCalled();
     expect(mockDriveClient.updateFileContent).not.toHaveBeenCalled();
