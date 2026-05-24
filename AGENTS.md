@@ -244,6 +244,33 @@ this.registerInterval(window.setInterval(() => { /* ... */ }, 1000));
 - Settings not persisting: ensure `loadData`/`saveData` are awaited and you re-render the UI after changes.
 - Mobile-only issues: confirm you're not using desktop-only APIs; check `isDesktopOnly` and adjust.
 
+## Bug Prevention & Common Pitfalls
+
+### 1. esbuild `node:` Prefix Exclusions
+When bundling libraries that import Node.js built-ins using the `node:` protocol prefix (e.g. `node:http` or `node:fs`), Node's standard `builtinModules` list does *not* match them. Always ensure both bare names and `node:` prefixed modules are marked as `external` in `esbuild.config.mjs`:
+```js
+external: [...builtinModules, ...builtinModules.map(m => `node:${m}`)]
+```
+
+### 2. Plugin Directory Path Safety
+Never assume the configuration folder is named `.obsidian` or that the plugin folder matches its ID directly. Always use the runtime `manifest.dir` property with a fallback:
+```ts
+const pluginDir = (this.plugin.manifest as any).dir || `${this.app.vault.configDir}/plugins/${this.plugin.manifest.id}`;
+```
+
+### 3. Strict Mode Dictionary Lookups
+Under `"noUncheckedIndexedAccess": true`, accessing arrays by index or records by key returns type `T | undefined`. Always provide fallback values (e.g., `?? 0` or `|| '{}'`) to satisfy TypeScript compiler checks.
+
+### 4. No Client-Side Client Secrets
+Never hardcode or transmit a `client_secret` from the client-side Obsidian plugin. Public client IDs (using PKCE) do not require a secret to refresh tokens, and the token exchange endpoint handles the secret securely on the server/worker side.
+
+### 5. Recursive Hidden Directory Exclusions
+When excluding hidden directories or dotfiles, check all path segments rather than just the root string prefix:
+```ts
+const pathParts = file.path.split('/');
+if (pathParts.some(part => part.startsWith('.'))) continue;
+```
+
 ## References
 
 - Obsidian sample plugin: https://github.com/obsidianmd/obsidian-sample-plugin
