@@ -19,7 +19,8 @@ export default {
     // Route 1: /redirect
     if (path === "/redirect") {
       console.info('Redirect')
-      const targetBase = "obsidian://logging-plugin";
+      const pluginId = searchParams.get("state") || "obsidian_drive_sync";
+      const targetBase = `obsidian://${pluginId}`;
       const destinationUrl = `${targetBase}${incomingUrl.search}`;
       
       return new Response(null, {
@@ -36,6 +37,11 @@ export default {
       console.info("Display")
       const errorParam = searchParams.get("error");
       const codeParam = searchParams.get("code") || "";
+      const pluginId = searchParams.get("state") || "obsidian_drive_sync";
+      const displayName = pluginId
+        .split(/[_-]/)
+        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+        .join(" ");
 
       let contentHtml = "";
 
@@ -60,7 +66,7 @@ export default {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Logging Plugin Auth</title>
+    <title>${displayName} Auth</title>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f5f6; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
         .card { background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); width: 100%; max-width: 400px; box-sizing: border-box; }

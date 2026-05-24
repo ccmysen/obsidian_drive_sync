@@ -127,6 +127,7 @@ export default class LoggingPlugin extends Plugin {
       prompt: 'consent',
       code_challenge: challenge,
       code_challenge_method: 'S256',
+      state: this.manifest.id,
     });
 
     const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
