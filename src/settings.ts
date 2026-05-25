@@ -1,7 +1,7 @@
 import {App, PluginSettingTab, Setting} from 'obsidian';
-import LoggingPlugin, {CLIENT_ID, REDIRECT_URI} from './main';
+import ObsidianDriveSync, {CLIENT_ID, REDIRECT_URI} from './main';
 
-export interface LoggingPluginSettings {
+export interface ObsidianDriveSyncSettings {
   accessToken: string;
   refreshToken: string;
   destinationFolderId: string;
@@ -11,7 +11,7 @@ export interface LoggingPluginSettings {
   syncIntervalMinutes: number;
 }
 
-export const DEFAULT_SETTINGS: LoggingPluginSettings = {
+export const DEFAULT_SETTINGS: ObsidianDriveSyncSettings = {
   accessToken: '',
   refreshToken: '',
   destinationFolderId: '',
@@ -21,10 +21,10 @@ export const DEFAULT_SETTINGS: LoggingPluginSettings = {
   syncIntervalMinutes: 15,
 };
 
-export class SampleSettingTab extends PluginSettingTab {
-  plugin: LoggingPlugin;
+export class ObsidianDriveSyncSettingTab extends PluginSettingTab {
+  plugin: ObsidianDriveSync;
 
-  constructor(app: App, plugin: LoggingPlugin) {
+  constructor(app: App, plugin: ObsidianDriveSync) {
     super(app, plugin);
     this.plugin = plugin;
   }

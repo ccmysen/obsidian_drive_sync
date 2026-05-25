@@ -1,5 +1,5 @@
 import { Plugin, TFile, TFolder, Notice, ObsidianProtocolData, requestUrl } from 'obsidian';
-import { DEFAULT_SETTINGS, LoggingPluginSettings, SampleSettingTab } from './settings';
+import { DEFAULT_SETTINGS, ObsidianDriveSyncSettings, ObsidianDriveSyncSettingTab } from './settings';
 import * as CryptoJS from 'crypto-js';
 import { GoogleDriveClient } from './google';
 import { SyncManager } from './sync';
@@ -7,8 +7,8 @@ import { SyncManager } from './sync';
 export const CLIENT_ID = '926375238404-crta4spf8usf5hvo174v1npitf5t10mq.apps.googleusercontent.com';
 export const REDIRECT_URI = 'https://redirect.ccmysen.workers.dev/';
 
-export default class LoggingPlugin extends Plugin {
-  settings: LoggingPluginSettings;
+export default class ObsidianDriveSync extends Plugin {
+  settings: ObsidianDriveSyncSettings;
   driveClient: GoogleDriveClient;
   syncManager: SyncManager;
   public lastSyncTime = Date.now();
@@ -155,7 +155,7 @@ export default class LoggingPlugin extends Plugin {
       })
     );
 
-    this.addSettingTab(new SampleSettingTab(this.app, this));
+    this.addSettingTab(new ObsidianDriveSyncSettingTab(this.app, this));
 
     // Trigger sync asynchronously after loading so it doesn't block startup
     if (this.settings.accessToken && this.settings.refreshToken) {
@@ -292,7 +292,7 @@ export default class LoggingPlugin extends Plugin {
     this.settings = Object.assign(
       {},
       DEFAULT_SETTINGS,
-      (await this.loadData()) as Partial<LoggingPluginSettings>
+      (await this.loadData()) as Partial<ObsidianDriveSyncSettings>
     );
     if (!this.settings.destinationFolderName) {
       this.settings.destinationFolderName = this.app.vault.getName();

@@ -38,7 +38,7 @@ describe('GoogleDriveClient', () => {
     const meta = await client.getFileMetadata('file123');
 
     expect(requestUrl).toHaveBeenCalledTimes(1);
-    const lastCallParam = vi.mocked(requestUrl).mock.calls[0]?.[0];
+    const lastCallParam = vi.mocked(requestUrl).mock.calls[0]?.[0] as any;
     expect(lastCallParam?.headers?.['Authorization']).toBe('Bearer initial-access-token');
     expect(meta?.id).toBe('file123');
   });
@@ -76,7 +76,7 @@ describe('GoogleDriveClient', () => {
     expect(requestUrl).toHaveBeenCalledTimes(3);
 
     // Verify refresh endpoint request params
-    const refreshCallParam = vi.mocked(requestUrl).mock.calls[1]?.[0];
+    const refreshCallParam = vi.mocked(requestUrl).mock.calls[1]?.[0] as any;
     expect(refreshCallParam?.url).toBe('https://redirect.ccmysen.workers.dev/token');
     expect(refreshCallParam?.method).toBe('POST');
     expect(refreshCallParam?.body).toContain('refresh_token=initial-refresh-token');
@@ -89,7 +89,7 @@ describe('GoogleDriveClient', () => {
     expect(onTokenRefreshMock).toHaveBeenCalledWith('new-access-token', 'new-refresh-token');
 
     // Verify retry parameter was called with new token
-    const retryCallParam = vi.mocked(requestUrl).mock.calls[2]?.[0];
+    const retryCallParam = vi.mocked(requestUrl).mock.calls[2]?.[0] as any;
     expect(retryCallParam?.headers?.['Authorization']).toBe('Bearer new-access-token');
     expect(meta?.id).toBe('file123');
   });
@@ -147,8 +147,8 @@ describe('GoogleDriveClient', () => {
     expect(files[0]?.id).toBe('f1');
     expect(files[1]?.id).toBe('f2');
 
-    const firstCallUrl = vi.mocked(requestUrl).mock.calls[0]?.[0]?.url;
-    const secondCallUrl = vi.mocked(requestUrl).mock.calls[1]?.[0]?.url;
+    const firstCallUrl = (vi.mocked(requestUrl).mock.calls[0]?.[0] as any)?.url;
+    const secondCallUrl = (vi.mocked(requestUrl).mock.calls[1]?.[0] as any)?.url;
 
     expect(firstCallUrl).not.toContain('pageToken');
     expect(secondCallUrl).toContain('pageToken=token-page-2');
@@ -188,12 +188,12 @@ describe('GoogleDriveClient', () => {
     expect(finalFolderId).toBe('folderB_id');
 
     // 1. Search call for FolderA
-    const searchCall1 = vi.mocked(requestUrl).mock.calls[0]?.[0];
+    const searchCall1 = vi.mocked(requestUrl).mock.calls[0]?.[0] as any;
     expect(searchCall1?.url).toContain("'rootId'%20in%20parents");
     expect(searchCall1?.url).toContain("name%20%3D%20'FolderA'");
 
     // 2. Create call for FolderA
-    const createCall1 = vi.mocked(requestUrl).mock.calls[1]?.[0];
+    const createCall1 = vi.mocked(requestUrl).mock.calls[1]?.[0] as any;
     expect(JSON.parse(createCall1?.body as string)).toEqual({
       name: 'FolderA',
       mimeType: 'application/vnd.google-apps.folder',
@@ -201,7 +201,7 @@ describe('GoogleDriveClient', () => {
     });
 
     // 3. Search call for FolderB
-    const searchCall2 = vi.mocked(requestUrl).mock.calls[2]?.[0];
+    const searchCall2 = vi.mocked(requestUrl).mock.calls[2]?.[0] as any;
     expect(searchCall2?.url).toContain("'folderA_id'%20in%20parents");
     expect(searchCall2?.url).toContain("name%20%3D%20'FolderB'");
   });
