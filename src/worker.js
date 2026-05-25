@@ -58,12 +58,41 @@ export default {
         const targetBase = `obsidian://${pluginId}`;
         const destinationUrl = `${targetBase}${incomingUrl.search}`;
         trace.log(`Redirecting to: ${destinationUrl}`);
-        
-        responseStatus = 301;
-        return new Response(null, {
-          status: 301,
+
+        const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Obsidian Drive Sync Auth</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f5f6; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .card { background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); width: 100%; max-width: 450px; box-sizing: border-box; text-align: center; }
+        h1 { color: #2d3748; font-size: 1.5rem; margin-bottom: 1rem; }
+        p { color: #4a5568; line-height: 1.5; font-size: 0.95rem; margin-bottom: 1.5rem; }
+        .btn { display: inline-block; background: #4f46e5; color: white; padding: 0.75rem 1.5rem; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 0.95rem; border: none; cursor: pointer; transition: background 0.2s; }
+        .btn:hover { background: #4338ca; }
+        .hint { font-size: 0.8rem; color: #718096; margin-top: 1rem; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Authentication Successful</h1>
+        <p>Your Google Drive credentials have been verified. Your browser should prompt you to open Obsidian. If not, click the button below.</p>
+        <a href="${escapeHtml(destinationUrl)}" class="btn">Open Obsidian</a>
+        <p class="hint">You can safely close this window once the redirect completes.</p>
+    </div>
+    <script>
+        // Automatically attempt to redirect to Obsidian
+        window.location.href = "${destinationUrl.replace(/"/g, '\\"')}";
+    </script>
+</body>
+</html>`;
+
+        responseStatus = 200;
+        return new Response(html, {
           headers: {
-            "Location": destinationUrl,
+            "Content-Type": "text/html;charset=UTF-8",
             "Cache-Control": "no-cache"
           }
         });
