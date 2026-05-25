@@ -321,4 +321,13 @@ export class GoogleDriveClient {
 
     return files;
   }
+
+  // Download file content from Google Drive as ArrayBuffer
+  public async downloadFile(fileId: string): Promise<ArrayBuffer> {
+    const res = await this.request({
+      url: `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
+      method: 'GET',
+    });
+    return res.arrayBuffer;
+  }
 }

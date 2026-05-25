@@ -49,8 +49,65 @@ describe('SyncManager', () => {
         readBinary: async (file: any) => {
           return fileContents[file.path] as ArrayBuffer;
         },
-        getAbstractFileByPath: vi.fn(),
-        delete: vi.fn().mockResolvedValue(undefined),
+        getAbstractFileByPath: vi.fn().mockImplementation((path) => {
+          const f = mockFiles.find(file => file.path === path);
+          if (f) {
+            const fileInstance = new TFile();
+            Object.assign(fileInstance, f);
+            return fileInstance;
+          }
+          return null;
+        }),
+        delete: vi.fn().mockImplementation(async (file) => {
+          const idx = mockFiles.findIndex(f => f.path === file.path);
+          if (idx !== -1) {
+            mockFiles.splice(idx, 1);
+          }
+          delete fileContents[file.path];
+          delete adapterFiles[file.path];
+        }),
+        createFolder: vi.fn().mockResolvedValue(undefined),
+        create: vi.fn().mockImplementation(async (path, content) => {
+          adapterFiles[path] = content;
+          fileContents[path] = content;
+          mockFiles.push({ path, name: path.split('/').pop(), extension: path.split('.').pop() });
+        }),
+        createBinary: vi.fn().mockImplementation(async (path, content) => {
+          fileContents[path] = content;
+          mockFiles.push({ path, name: path.split('/').pop(), extension: path.split('.').pop() });
+        }),
+        modify: vi.fn().mockImplementation(async (file, content) => {
+          adapterFiles[file.path] = content;
+          fileContents[file.path] = content;
+        }),
+        modifyBinary: vi.fn().mockImplementation(async (file, content) => {
+          fileContents[file.path] = content;
+        }),
+        rename: vi.fn().mockImplementation(async (file, newPath) => {
+          const oldPath = file.path;
+          file.path = newPath;
+          if (oldPath in adapterFiles) {
+            const content = adapterFiles[oldPath];
+            if (content !== undefined) {
+              adapterFiles[newPath] = content;
+            }
+            delete adapterFiles[oldPath];
+          }
+          if (oldPath in fileContents) {
+            const content = fileContents[oldPath];
+            if (content !== undefined) {
+              fileContents[newPath] = content;
+            }
+            delete fileContents[oldPath];
+          }
+          const fIndex = mockFiles.findIndex(f => f.path === oldPath);
+          if (fIndex !== -1) {
+            const mockFile = mockFiles[fIndex];
+            if (mockFile) {
+              mockFile.path = newPath;
+            }
+          }
+        }),
         adapter: {
           exists: async (path: string) => {
             return path in adapterFiles;
@@ -105,6 +162,9 @@ describe('SyncManager', () => {
       resolveFolderHierarchy: vi.fn(),
       createFile: vi.fn(),
       updateFileContent: vi.fn(),
+      downloadFile: vi.fn().mockImplementation(async (id) => {
+        return new TextEncoder().encode('remote content').buffer;
+      }),
     } as unknown as GoogleDriveClient;
 
     syncManager = new SyncManager(mockApp, mockPlugin, mockDriveClient);
@@ -605,12 +665,14 @@ describe('SyncManager', () => {
       extension: 'md',
     };
     mockFiles.push(file);
-    fileContents['remote-deleted.md'] = 'content';
+    const content = 'content';
+    fileContents['remote-deleted.md'] = content;
+    const hash = CryptoJS.MD5(content).toString();
 
     const existingState = {
       files: {
         'remote-deleted.md': {
-          hash: 'someHash',
+          hash: hash,
           driveFileId: 'driveId123',
           lastSyncTime: Date.now(),
           deleted: false,
@@ -625,6 +687,7 @@ describe('SyncManager', () => {
     // Mock vault functions
     const localFileInstance = new TFile();
     (localFileInstance as any).path = 'remote-deleted.md';
+    (localFileInstance as any).extension = 'md';
     mockApp.vault.getAbstractFileByPath = vi.fn().mockReturnValue(localFileInstance);
     mockApp.vault.delete = vi.fn().mockResolvedValue(undefined);
 
@@ -653,7 +716,7 @@ describe('SyncManager', () => {
 
     // Mock listFilesInFolder to return the file on Drive
     mockDriveClient.listFilesInFolder.mockResolvedValueOnce([
-      { id: 'driveId123', name: 'local-skipped-deleted.md', mimeType: 'text/markdown' }
+      { id: 'driveId123', name: 'local-skipped-deleted.md', mimeType: 'text/markdown', md5Checksum: 'someHash' }
     ]);
 
     // Spy on askDeleteChoice and mock it to return 'skip'
@@ -688,7 +751,7 @@ describe('SyncManager', () => {
 
     // Mock listFilesInFolder to return the file on Drive
     mockDriveClient.listFilesInFolder.mockResolvedValueOnce([
-      { id: 'driveId456', name: 'local-confirmed-deleted.md', mimeType: 'text/markdown' }
+      { id: 'driveId456', name: 'local-confirmed-deleted.md', mimeType: 'text/markdown', md5Checksum: 'someHash' }
     ]);
 
     // Spy on askDeleteChoice and mock it to return 'delete'
@@ -728,8 +791,8 @@ describe('SyncManager', () => {
 
     // Mock listFilesInFolder to return both files on Drive
     mockDriveClient.listFilesInFolder.mockResolvedValueOnce([
-      { id: 'driveId1', name: 'file1.md', mimeType: 'text/markdown' },
-      { id: 'driveId2', name: 'file2.md', mimeType: 'text/markdown' }
+      { id: 'driveId1', name: 'file1.md', mimeType: 'text/markdown', md5Checksum: 'someHash' },
+      { id: 'driveId2', name: 'file2.md', mimeType: 'text/markdown', md5Checksum: 'someHash' }
     ]);
 
     // Spy on askDeleteChoice and mock it to return 'delete' with applyToAll: true
@@ -801,5 +864,166 @@ describe('SyncManager', () => {
     const savedState = JSON.parse(adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] || '{}');
     expect(savedState.files['del.md'].deleted).toBe(true);
     expect(savedState.files['del.md'].driveFileId).toBe('');
+  });
+
+  it('should download new remote file and create local folder recursively', async () => {
+    // 1. Setup listFilesInFolder to return a subfolder first, then a file inside it
+    mockDriveClient.listFilesInFolder = vi.fn()
+      .mockImplementation(async (folderId) => {
+        if (folderId === 'destId') {
+          return [
+            { id: 'folderId1', name: 'FolderA', mimeType: 'application/vnd.google-apps.folder' }
+          ];
+        }
+        if (folderId === 'folderId1') {
+          return [
+            { id: 'driveFileId1', name: 'note.md', mimeType: 'text/markdown', md5Checksum: CryptoJS.MD5('remote content').toString() }
+          ];
+        }
+        return [];
+      });
+
+    mockDriveClient.downloadFile = vi.fn().mockImplementation(async (fileId) => {
+      if (fileId === 'driveFileId1') {
+        return new TextEncoder().encode('remote content').buffer;
+      }
+      throw new Error('Unexpected download');
+    });
+
+    // 2. Run sync
+    await syncManager.runSync('destId');
+
+    // 3. Assertions
+    expect(mockApp.vault.createFolder).toHaveBeenCalledWith('FolderA');
+    expect(fileContents['FolderA/note.md']).toBe('remote content');
+
+    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] || '{}');
+    expect(savedState.files['FolderA/note.md']).toBeDefined();
+    expect(savedState.files['FolderA/note.md'].driveFileId).toBe('driveFileId1');
+    expect(savedState.files['FolderA/note.md'].hash).toBe(CryptoJS.MD5('remote content').toString());
+  });
+
+  it('should download modified remote file and update local file', async () => {
+    // 1. Setup local file and state
+    const file = { path: 'test.md', name: 'test.md', extension: 'md' };
+    mockFiles.push(file);
+    fileContents['test.md'] = 'old content';
+
+    const existingState = {
+      files: {
+        'test.md': {
+          hash: CryptoJS.MD5('old content').toString(),
+          driveFileId: 'driveId123',
+          lastSyncTime: Date.now(),
+          deleted: false,
+        },
+      },
+    };
+    adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] = JSON.stringify(existingState);
+
+    // Mock Drive list and download
+    mockDriveClient.listFilesInFolder = vi.fn().mockResolvedValue([
+      { id: 'driveId123', name: 'test.md', mimeType: 'text/markdown', md5Checksum: CryptoJS.MD5('new content').toString() }
+    ]);
+    mockDriveClient.downloadFile = vi.fn().mockResolvedValue(new TextEncoder().encode('new content').buffer);
+
+    // 2. Run sync
+    await syncManager.runSync('destId');
+
+    // 3. Assertions
+    expect(fileContents['test.md']).toBe('new content');
+    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] || '{}');
+    expect(savedState.files['test.md'].hash).toBe(CryptoJS.MD5('new content').toString());
+  });
+
+  it('should merge conflicts inline with Git-style conflict markers and sync back to Drive', async () => {
+    // 1. Setup local file and state
+    const file = { path: 'test.md', name: 'test.md', extension: 'md' };
+    mockFiles.push(file);
+    fileContents['test.md'] = 'local content';
+
+    const existingState = {
+      files: {
+        'test.md': {
+          hash: 'differentEntryHash',
+          driveFileId: 'driveId123',
+          lastSyncTime: Date.now(),
+          deleted: false,
+        },
+      },
+    };
+    adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] = JSON.stringify(existingState);
+
+    // Mock Drive
+    mockDriveClient.listFilesInFolder = vi.fn().mockResolvedValue([
+      { id: 'driveId123', name: 'test.md', mimeType: 'text/markdown', md5Checksum: CryptoJS.MD5('remote content').toString() }
+    ]);
+    mockDriveClient.downloadFile = vi.fn().mockResolvedValue(new TextEncoder().encode('remote content').buffer);
+    mockDriveClient.updateFileContent = vi.fn().mockResolvedValue(undefined);
+
+    // 2. Run sync
+    await syncManager.runSync('destId');
+
+    // 3. Assertions
+    const expectedMerged = [
+      '<<<<<<< Local Changes',
+      'local content',
+      '=======',
+      'remote content',
+      '>>>>>>> Remote Changes'
+    ].join('\n');
+
+    expect(fileContents['test.md']).toBe(expectedMerged);
+    expect(mockDriveClient.updateFileContent).toHaveBeenCalledWith('driveId123', expectedMerged);
+
+    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] || '{}');
+    expect(savedState.files['test.md'].hash).toBe(CryptoJS.MD5(expectedMerged).toString());
+  });
+
+  it('should rename local file when remote rename/move is detected', async () => {
+    // 1. Setup local file and state
+    const file = { path: 'FolderA/test.md', name: 'test.md', extension: 'md' };
+    mockFiles.push(file);
+    fileContents['FolderA/test.md'] = 'content';
+
+    const existingState = {
+      files: {
+        'FolderA/test.md': {
+          hash: CryptoJS.MD5('content').toString(),
+          driveFileId: 'driveId123',
+          lastSyncTime: Date.now(),
+          deleted: false,
+        },
+      },
+    };
+    adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] = JSON.stringify(existingState);
+
+    // Mock listFilesInFolder for recursive BFS mapping
+    mockDriveClient.listFilesInFolder = vi.fn().mockImplementation(async (folderId) => {
+      if (folderId === 'destId') {
+        return [
+          { id: 'folderB_Id', name: 'FolderB', mimeType: 'application/vnd.google-apps.folder' }
+        ];
+      }
+      if (folderId === 'folderB_Id') {
+        return [
+          { id: 'driveId123', name: 'test.md', mimeType: 'text/markdown', md5Checksum: CryptoJS.MD5('content').toString() }
+        ];
+      }
+      return [];
+    });
+
+    // 2. Run sync
+    await syncManager.runSync('destId');
+
+    // 3. Assertions
+    expect(mockApp.vault.rename).toHaveBeenCalled();
+    expect(fileContents['FolderB/test.md']).toBe('content');
+    expect(fileContents['FolderA/test.md']).toBeUndefined();
+
+    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] || '{}');
+    expect(savedState.files['FolderA/test.md']).toBeUndefined();
+    expect(savedState.files['FolderB/test.md']).toBeDefined();
+    expect(savedState.files['FolderB/test.md'].driveFileId).toBe('driveId123');
   });
 });
