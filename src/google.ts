@@ -257,4 +257,45 @@ export class GoogleDriveClient {
       }),
     });
   }
+
+  // Get full metadata for a file/folder
+  public async getFileMetadata(fileId: string): Promise<{ id: string; name: string; mimeType: string; parents: string[]; trashed: boolean } | null> {
+    try {
+      const res = await this.request({
+        url: `https://www.googleapis.com/drive/v3/files/${fileId}?fields=id,name,mimeType,parents,trashed`,
+        method: 'GET',
+      });
+      const data = res.json;
+      if (data) {
+        return {
+          id: data.id,
+          name: data.name,
+          mimeType: data.mimeType,
+          parents: data.parents || [],
+          trashed: !!data.trashed,
+        };
+      }
+      return null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Delete an item from Google Drive permanently
+  public async deleteItem(itemId: string): Promise<void> {
+    await this.request({
+      url: `https://www.googleapis.com/drive/v3/files/${itemId}`,
+      method: 'DELETE',
+    });
+  }
+
+  // List files and folders directly under a parent folder
+  public async listFilesInFolder(folderId: string): Promise<any[]> {
+    const q = `'${folderId}' in parents and trashed = false`;
+    const res = await this.request({
+      url: `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name,mimeType,md5Checksum,parents)`,
+      method: 'GET',
+    });
+    return res.json.files || [];
+  }
 }

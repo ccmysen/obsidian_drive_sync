@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { TFile } from 'obsidian';
 import { SyncManager } from '../sync';
 import { GoogleDriveClient } from '../google';
 import * as CryptoJS from 'crypto-js';
@@ -15,6 +16,11 @@ vi.mock('obsidian', () => {
       manifest = { id: 'obsidian_drive_sync' };
     },
     TFile: class {},
+    Modal: class {
+      constructor(public app: any) {}
+      open() {}
+      close() {}
+    },
   };
 });
 
@@ -43,6 +49,8 @@ describe('SyncManager', () => {
         readBinary: async (file: any) => {
           return fileContents[file.path] as ArrayBuffer;
         },
+        getAbstractFileByPath: vi.fn(),
+        delete: vi.fn().mockResolvedValue(undefined),
         adapter: {
           exists: async (path: string) => {
             return path in adapterFiles;
@@ -81,6 +89,14 @@ describe('SyncManager', () => {
         }
         return { id: id, name: 'MyFolder', mimeType: 'application/vnd.google-apps.folder', trashed: false };
       }),
+      getFileMetadata: vi.fn().mockImplementation(async (id) => {
+        if (id === 'invalidId' || id === 'nonexistentId') {
+          return null;
+        }
+        return { id: id, name: 'test.md', mimeType: 'text/markdown', parents: ['destId'], trashed: false };
+      }),
+      deleteItem: vi.fn().mockResolvedValue(undefined),
+      listFilesInFolder: vi.fn().mockResolvedValue([]),
       renameItem: vi.fn().mockResolvedValue(undefined),
       getFileParents: vi.fn().mockResolvedValue([]),
       moveFile: vi.fn().mockResolvedValue(undefined),
@@ -575,5 +591,160 @@ describe('SyncManager', () => {
     expect(savedState.files['FolderA/note.md']).toBeUndefined();
     expect(savedState.files['FolderB/note.md']).toBeDefined();
     expect(savedState.files['FolderB/note.md'].driveFileId).toBe('driveIdNote');
+  });
+
+  it('should delete local file on remote deletion if file no longer exists on Google Drive', async () => {
+    // 1. Setup local file and sync state
+    const file = {
+      path: 'remote-deleted.md',
+      name: 'remote-deleted.md',
+      extension: 'md',
+    };
+    mockFiles.push(file);
+    fileContents['remote-deleted.md'] = 'content';
+
+    const existingState = {
+      files: {
+        'remote-deleted.md': {
+          hash: 'someHash',
+          driveFileId: 'driveId123',
+          lastSyncTime: Date.now(),
+          deleted: false,
+        },
+      },
+    };
+    adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] = JSON.stringify(existingState);
+
+    // Mock getFileMetadata to return null (meaning file was deleted on Drive)
+    mockDriveClient.getFileMetadata.mockResolvedValueOnce(null);
+
+    // Mock vault functions
+    const localFileInstance = new TFile();
+    (localFileInstance as any).path = 'remote-deleted.md';
+    mockApp.vault.getAbstractFileByPath = vi.fn().mockReturnValue(localFileInstance);
+    mockApp.vault.delete = vi.fn().mockResolvedValue(undefined);
+
+    // 2. Run sync
+    await syncManager.runSync('destId');
+
+    // 3. Assertions
+    expect(mockApp.vault.delete).toHaveBeenCalledWith(localFileInstance);
+    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] || '{}');
+    expect(savedState.files['remote-deleted.md'].deleted).toBe(true);
+  });
+
+  it('should prompt user on local deletion and clear driveFileId if skipped', async () => {
+    // 1. Setup sync state with a file that exists on Drive but is missing locally
+    const existingState = {
+      files: {
+        'local-skipped-deleted.md': {
+          hash: 'someHash',
+          driveFileId: 'driveId123',
+          lastSyncTime: Date.now(),
+          deleted: false,
+        },
+      },
+    };
+    adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] = JSON.stringify(existingState);
+
+    // Mock listFilesInFolder to return the file on Drive
+    mockDriveClient.listFilesInFolder.mockResolvedValueOnce([
+      { id: 'driveId123', name: 'local-skipped-deleted.md', mimeType: 'text/markdown' }
+    ]);
+
+    // Spy on askDeleteChoice and mock it to return 'skip'
+    const askDeleteSpy = vi.spyOn(syncManager as any, 'askDeleteChoice')
+      .mockResolvedValue({ choice: 'skip', applyToAll: false });
+
+    // 2. Run sync
+    await syncManager.runSync('destId');
+
+    // 3. Assertions
+    expect(askDeleteSpy).toHaveBeenCalledWith('local-skipped-deleted.md');
+    expect(mockDriveClient.deleteItem).not.toHaveBeenCalled();
+
+    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] || '{}');
+    expect(savedState.files['local-skipped-deleted.md'].deleted).toBe(true);
+    expect(savedState.files['local-skipped-deleted.md'].driveFileId).toBe('');
+  });
+
+  it('should prompt user on local deletion and delete from Drive if confirmed', async () => {
+    // 1. Setup sync state with a file that exists on Drive but is missing locally
+    const existingState = {
+      files: {
+        'local-confirmed-deleted.md': {
+          hash: 'someHash',
+          driveFileId: 'driveId456',
+          lastSyncTime: Date.now(),
+          deleted: false,
+        },
+      },
+    };
+    adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] = JSON.stringify(existingState);
+
+    // Mock listFilesInFolder to return the file on Drive
+    mockDriveClient.listFilesInFolder.mockResolvedValueOnce([
+      { id: 'driveId456', name: 'local-confirmed-deleted.md', mimeType: 'text/markdown' }
+    ]);
+
+    // Spy on askDeleteChoice and mock it to return 'delete'
+    const askDeleteSpy = vi.spyOn(syncManager as any, 'askDeleteChoice')
+      .mockResolvedValue({ choice: 'delete', applyToAll: false });
+
+    // 2. Run sync
+    await syncManager.runSync('destId');
+
+    // 3. Assertions
+    expect(askDeleteSpy).toHaveBeenCalledWith('local-confirmed-deleted.md');
+    expect(mockDriveClient.deleteItem).toHaveBeenCalledWith('driveId456');
+
+    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] || '{}');
+    expect(savedState.files['local-confirmed-deleted.md'].deleted).toBe(true);
+  });
+
+  it('should apply the same choice to subsequent deletions when applyToAll is true', async () => {
+    // 1. Setup sync state with two files that exist on Drive but are missing locally
+    const existingState = {
+      files: {
+        'file1.md': {
+          hash: 'someHash',
+          driveFileId: 'driveId1',
+          lastSyncTime: Date.now(),
+          deleted: false,
+        },
+        'file2.md': {
+          hash: 'someHash',
+          driveFileId: 'driveId2',
+          lastSyncTime: Date.now(),
+          deleted: false,
+        },
+      },
+    };
+    adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] = JSON.stringify(existingState);
+
+    // Mock listFilesInFolder to return both files on Drive
+    mockDriveClient.listFilesInFolder.mockResolvedValueOnce([
+      { id: 'driveId1', name: 'file1.md', mimeType: 'text/markdown' },
+      { id: 'driveId2', name: 'file2.md', mimeType: 'text/markdown' }
+    ]);
+
+    // Spy on askDeleteChoice and mock it to return 'delete' with applyToAll: true
+    const askDeleteSpy = vi.spyOn(syncManager as any, 'askDeleteChoice')
+      .mockResolvedValueOnce({ choice: 'delete', applyToAll: true });
+
+    // 2. Run sync
+    await syncManager.runSync('destId');
+
+    // 3. Assertions
+    // askDeleteChoice should only be called once (for the first file encountered)
+    expect(askDeleteSpy).toHaveBeenCalledTimes(1);
+    
+    // Both items should be deleted from Drive
+    expect(mockDriveClient.deleteItem).toHaveBeenCalledWith('driveId1');
+    expect(mockDriveClient.deleteItem).toHaveBeenCalledWith('driveId2');
+
+    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] || '{}');
+    expect(savedState.files['file1.md'].deleted).toBe(true);
+    expect(savedState.files['file2.md'].deleted).toBe(true);
   });
 });

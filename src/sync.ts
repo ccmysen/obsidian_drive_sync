@@ -1,6 +1,7 @@
 import { App, TFile, Notice, Plugin } from 'obsidian';
 import * as CryptoJS from 'crypto-js';
 import { GoogleDriveClient } from './google';
+import { DeleteConfirmationModal } from './ui/delete-modal';
 
 export interface SyncEntry {
   hash: string;
@@ -27,6 +28,41 @@ export class SyncManager {
     this.driveClient = driveClient;
     const pluginDir = (this.plugin.manifest as any).dir || `${this.app.vault.configDir}/plugins/${this.plugin.manifest.id}`;
     this.stateFilePath = `${pluginDir}/sync_state.json`;
+  }
+
+  // Show a confirmation modal for local file deletion
+  private askDeleteChoice(fileName: string): Promise<{ choice: 'delete' | 'skip', applyToAll: boolean }> {
+    return new Promise((resolve) => {
+      const modal = new DeleteConfirmationModal(this.app, fileName, (choice, applyToAll) => {
+        resolve({ choice, applyToAll });
+      });
+      modal.open();
+    });
+  }
+
+  // Recursively fetch all remote files under a root folder ID
+  private async getAllRemoteFiles(rootFolderId: string): Promise<Map<string, any>> {
+    const remoteFiles = new Map<string, any>();
+    const queue = [rootFolderId];
+    
+    while (queue.length > 0) {
+      const currentFolderId = queue.shift();
+      if (!currentFolderId) continue;
+      
+      try {
+        const items = await this.driveClient.listFilesInFolder(currentFolderId);
+        for (const item of items) {
+          if (item.mimeType === 'application/vnd.google-apps.folder') {
+            queue.push(item.id);
+          } else {
+            remoteFiles.set(item.id, item);
+          }
+        }
+      } catch (e) {
+        console.error(`Failed to list files in folder ${currentFolderId}:`, e);
+      }
+    }
+    return remoteFiles;
   }
 
   // Load state from local file
@@ -452,7 +488,41 @@ export class SyncManager {
     let uploadCount = 0;
     let skipMd5MatchCount = 0;
     let failCount = 0;
-    let deleteMarkCount = 0;
+    let localDeleteCount = 0;
+
+    // A. Fetch all remote files recursively from Google Drive
+    const remoteFiles = await this.getAllRemoteFiles(resolvedFolderId);
+
+    // B. Check for remote deletions (active in state and present locally, but missing on server)
+    // "propagate deletions locally (making sure that the file was not moved)"
+    for (const [path, entry] of Object.entries(this.state.files)) {
+      if (!entry.deleted && localFilePaths.has(path)) {
+        if (entry.driveFileId && !remoteFiles.has(entry.driveFileId)) {
+          // File was deleted on Google Drive!
+          // Make sure it wasn't just moved by checking if the file ID exists anywhere on Drive
+          const meta = await this.driveClient.getFileMetadata(entry.driveFileId);
+          if (!meta || meta.trashed) {
+            // Truly deleted on Drive! Propagate deletion locally.
+            const localFile = this.app.vault.getAbstractFileByPath(path);
+            if (localFile instanceof TFile) {
+              if (DEBUG_LOGGING) {
+                console.info(`Remote deletion detected: deleting local file ${path}`);
+              }
+              try {
+                await this.app.vault.delete(localFile);
+                localFilePaths.delete(path); // Remove from our set of active files
+              } catch (delErr) {
+                console.error(`Failed to delete local file ${path}:`, delErr);
+              }
+            }
+            entry.deleted = true;
+            entry.lastSyncTime = Date.now();
+            await this.saveState();
+            localDeleteCount++;
+          }
+        }
+      }
+    }
 
     // 1. Identify missing files (present in active state but not locally)
     const missingLocally = new Map<string, { path: string, entry: SyncEntry }[]>();
@@ -473,6 +543,7 @@ export class SyncManager {
     const filesToUploadDirectly: TFile[] = [];
 
     for (const file of localFiles) {
+      if (!localFilePaths.has(file.path)) continue; // Was deleted in remote deletion check
       const entry = this.state.files[file.path];
       if (!entry || entry.deleted) {
         const filename = file.name;
@@ -609,25 +680,94 @@ export class SyncManager {
       }
     }
 
-    // 6. Process remaining missing files (unpaired) and mark as deleted
+    // 6. Process remaining missing files (unpaired) and mark as deleted / prompt server delete
+    let globalDeleteChoice: 'delete' | 'skip' | null = null;
+
     for (const [filename, oldFilesList] of missingLocally.entries()) {
       for (const oldFile of oldFilesList) {
         if (!pairedOldPaths.has(oldFile.path)) {
           const entry = this.state.files[oldFile.path];
           if (entry && !entry.deleted) {
-            if (DEBUG_LOGGING) {
-              console.info(`Deleted file (exists in state but missing locally): ${oldFile.path}`);
+            let choice: 'delete' | 'skip' = 'skip';
+
+            // Check if the file still exists on Google Drive before prompting
+            const fileStillOnDrive = entry.driveFileId && remoteFiles.has(entry.driveFileId);
+
+            if (fileStillOnDrive) {
+              if (globalDeleteChoice) {
+                choice = globalDeleteChoice;
+              } else {
+                // Show confirmation modal to the user
+                const result = await this.askDeleteChoice(oldFile.path);
+                choice = result.choice;
+                if (result.applyToAll) {
+                  globalDeleteChoice = choice;
+                }
+              }
+
+              if (choice === 'delete') {
+                if (DEBUG_LOGGING) {
+                  console.info(`Applying deletion on Google Drive for: ${oldFile.path}`);
+                }
+                try {
+                  await this.driveClient.deleteItem(entry.driveFileId);
+                } catch (e) {
+                  console.error(`Failed to delete file ${oldFile.path} on Google Drive:`, e);
+                }
+              } else {
+                if (DEBUG_LOGGING) {
+                  console.info(`Skipping deletion on Google Drive for: ${oldFile.path} (leaving marked deleted in cache)`);
+                }
+                entry.driveFileId = ''; // Prevent future prompts
+              }
             }
+
             entry.deleted = true;
             entry.lastSyncTime = Date.now();
             await this.saveState();
-            deleteMarkCount++;
+            localDeleteCount++;
           }
         }
       }
     }
 
-    const summary = `Sync complete! Synced: ${uploadCount}, Unchanged (MD5 match): ${skipMd5MatchCount}, Excluded (dotfiles): ${excludedDotfilesCount}, Deletions logged: ${deleteMarkCount}, Failed: ${failCount}`;
+    // 7. Check for local deletions that are marked deleted in cache, but still exist on the server (live deletions)
+    for (const [path, entry] of Object.entries(this.state.files)) {
+      if (entry.deleted && entry.driveFileId && remoteFiles.has(entry.driveFileId)) {
+        let choice: 'delete' | 'skip' = 'skip';
+
+        if (globalDeleteChoice) {
+          choice = globalDeleteChoice;
+        } else {
+          // Show confirmation modal
+          const result = await this.askDeleteChoice(path);
+          choice = result.choice;
+          if (result.applyToAll) {
+            globalDeleteChoice = choice;
+          }
+        }
+
+        if (choice === 'delete') {
+          if (DEBUG_LOGGING) {
+            console.info(`Applying deletion on Google Drive for: ${path}`);
+          }
+          try {
+            await this.driveClient.deleteItem(entry.driveFileId);
+          } catch (e) {
+            console.error(`Failed to delete file ${path} on Google Drive:`, e);
+          }
+        } else {
+          if (DEBUG_LOGGING) {
+            console.info(`Skipping deletion on Google Drive for: ${path}`);
+          }
+          entry.driveFileId = ''; // Prevent future prompts
+        }
+        
+        await this.saveState();
+      }
+    }
+
+    const summary = `Sync complete! Synced: ${uploadCount}, Unchanged (MD5 match): ${skipMd5MatchCount}, Excluded (dotfiles): ${excludedDotfilesCount}, Deletions logged: ${localDeleteCount}, Failed: ${failCount}`;
     if (DEBUG_LOGGING) {
       console.log(summary);
     }
