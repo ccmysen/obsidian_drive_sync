@@ -67,14 +67,17 @@ export default class LoggingPlugin extends Plugin {
       })
     );
 
+    console.log("Obsidian Drive Sync: Registering context menu handlers...");
+
     this.registerEvent(
       this.app.workspace.on('editor-menu', (menu, editor, view) => {
+        console.log("Obsidian Drive Sync: editor-menu event triggered.");
         menu.addItem((item) => {
           item
             .setTitle('Force Google Drive sync')
-            //.setIcon('cloud-sync')
-            .setIcon('document')
+            .setIcon('cloud-sync')
             .onClick(async () => {
+              console.log("Obsidian Drive Sync: 'Force Google Drive sync' clicked from editor-menu.");
               if (this.settings.accessToken && this.settings.refreshToken) {
                 const folderId = this.settings.destinationFolderId || this.settings.destinationFolderName;
                 await this.syncManager.runSync(folderId);
@@ -87,9 +90,40 @@ export default class LoggingPlugin extends Plugin {
         menu.addItem((item) => {
           item
             .setTitle('Prune empty local folders')
-            .setIcon('document')
-            //.setIcon('folder-x')
+            .setIcon('folder-x')
             .onClick(async () => {
+              console.log("Obsidian Drive Sync: 'Prune empty local folders' clicked from editor-menu.");
+              const prunedCount = await this.syncManager.pruneEmptyLocalFolders();
+              new Notice(`Pruned ${prunedCount} empty local folder(s).`);
+            });
+        });
+      })
+    );
+
+    this.registerEvent(
+      this.app.workspace.on('file-menu', (menu, file) => {
+        console.log("Obsidian Drive Sync: file-menu event triggered for path:", file.path);
+        menu.addItem((item) => {
+          item
+            .setTitle('Force Google Drive sync')
+            .setIcon('cloud-sync')
+            .onClick(async () => {
+              console.log("Obsidian Drive Sync: 'Force Google Drive sync' clicked from file-menu.");
+              if (this.settings.accessToken && this.settings.refreshToken) {
+                const folderId = this.settings.destinationFolderId || this.settings.destinationFolderName;
+                await this.syncManager.runSync(folderId);
+              } else {
+                new Notice('Google Drive sync: Please authenticate in settings first.');
+              }
+            });
+        });
+
+        menu.addItem((item) => {
+          item
+            .setTitle('Prune empty local folders')
+            .setIcon('folder-x')
+            .onClick(async () => {
+              console.log("Obsidian Drive Sync: 'Prune empty local folders' clicked from file-menu.");
               const prunedCount = await this.syncManager.pruneEmptyLocalFolders();
               new Notice(`Pruned ${prunedCount} empty local folder(s).`);
             });
