@@ -767,12 +767,13 @@ export class SyncManager {
   }
 
   // Find and delete empty local folders in the Obsidian vault recursively
-  public async pruneEmptyLocalFolders(): Promise<number> {
+  public async pruneEmptyLocalFolders(rootPath?: string): Promise<number> {
     let prunedCount = 0;
     const allFiles = this.app.vault.getAllLoadedFiles();
     const folders = allFiles.filter((file): file is TFolder => {
       if (!(file instanceof TFolder)) return false;
       if (file.path === '/' || file.path === '' || (typeof file.isRoot === 'function' && file.isRoot())) return false;
+      if (rootPath && file.path !== rootPath && !file.path.startsWith(rootPath + '/')) return false;
       const pathParts = file.path.split('/');
       return !pathParts.some(part => part.startsWith('.'));
     });

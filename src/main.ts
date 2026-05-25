@@ -1,4 +1,4 @@
-import { Plugin, TFile, Notice, ObsidianProtocolData, requestUrl } from 'obsidian';
+import { Plugin, TFile, TFolder, Notice, ObsidianProtocolData, requestUrl } from 'obsidian';
 import { DEFAULT_SETTINGS, LoggingPluginSettings, SampleSettingTab } from './settings';
 import * as CryptoJS from 'crypto-js';
 import { GoogleDriveClient } from './google';
@@ -108,10 +108,28 @@ export default class LoggingPlugin extends Plugin {
             .setTitle('Force Google Drive sync')
             .setIcon('sync')
             .onClick(async () => {
-              console.log("Obsidian Drive Sync: 'Force Google Drive sync' clicked from file-menu.");
+              console.log(`Obsidian Drive Sync: 'Force Google Drive sync' clicked from file-menu for ${file.path}.`);
               if (this.settings.accessToken && this.settings.refreshToken) {
                 const folderId = this.settings.destinationFolderId || this.settings.destinationFolderName;
-                await this.syncManager.runSync(folderId);
+                const resolvedFolderId = await this.syncManager.resolveDestinationFolderId(folderId);
+                if (!resolvedFolderId) return;
+
+                if (file instanceof TFile) {
+                  new Notice(`Syncing file: ${file.name}`);
+                  await this.syncManager.syncSingleFile(file, resolvedFolderId);
+                  new Notice(`Syncing complete for: ${file.name}`);
+                } else if (file instanceof TFolder) {
+                  new Notice(`Syncing folder: ${file.name}`);
+                  const filesToSync = this.app.vault.getFiles().filter(f => f.path.startsWith(file.path + '/'));
+                  let syncedCount = 0;
+                  for (const f of filesToSync) {
+                    const pathParts = f.path.split('/');
+                    if (pathParts.some(part => part.startsWith('.'))) continue;
+                    await this.syncManager.syncSingleFile(f, resolvedFolderId);
+                    syncedCount++;
+                  }
+                  new Notice(`Syncing complete for folder: ${file.name} (${syncedCount} files)`);
+                }
               } else {
                 new Notice('Google Drive sync: Please authenticate in settings first.');
               }
@@ -123,9 +141,15 @@ export default class LoggingPlugin extends Plugin {
             .setTitle('Prune empty local folders')
             .setIcon('folder-x')
             .onClick(async () => {
-              console.log("Obsidian Drive Sync: 'Prune empty local folders' clicked from file-menu.");
-              const prunedCount = await this.syncManager.pruneEmptyLocalFolders();
-              new Notice(`Pruned ${prunedCount} empty local folder(s).`);
+              console.log(`Obsidian Drive Sync: 'Prune empty local folders' clicked from file-menu for ${file.path}.`);
+              const rootPath = file instanceof TFolder ? file.path : file.parent?.path;
+              if (rootPath) {
+                const prunedCount = await this.syncManager.pruneEmptyLocalFolders(rootPath);
+                new Notice(`Pruned ${prunedCount} empty local folder(s) under ${rootPath}.`);
+              } else {
+                const prunedCount = await this.syncManager.pruneEmptyLocalFolders();
+                new Notice(`Pruned ${prunedCount} empty local folder(s).`);
+              }
             });
         });
       })

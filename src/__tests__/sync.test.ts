@@ -1336,4 +1336,26 @@ describe('SyncManager', () => {
     expect(paths).not.toContain('folderA/folderB');
     expect(paths).not.toContain('folderA/folderB/folderC');
   });
+
+  it('should prune empty local folders only under a specified rootPath', async () => {
+    // 1. Setup mock folders
+    mockFolders.push(
+      { path: 'folderA', name: 'folderA' },
+      { path: 'folderA/folderB', name: 'folderB' },
+      { path: 'folderX', name: 'folderX' },
+      { path: 'folderX/folderY', name: 'folderY' }
+    );
+
+    // 2. Call pruneEmptyLocalFolders with 'folderA' as rootPath
+    const prunedCount = await syncManager.pruneEmptyLocalFolders('folderA');
+
+    // 3. Assertions
+    expect(prunedCount).toBe(2);
+
+    const paths = mockFolders.map(f => f.path);
+    expect(paths).toContain('folderX');
+    expect(paths).toContain('folderX/folderY');
+    expect(paths).not.toContain('folderA');
+    expect(paths).not.toContain('folderA/folderB');
+  });
 });
