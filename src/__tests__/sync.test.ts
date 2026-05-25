@@ -1168,4 +1168,72 @@ describe('SyncManager', () => {
     expect(savedState.files[expectedConflictPath].driveFileId).toBe('');
     expect(savedState.files['FolderA/image.png'].driveFileId).toBe('driveId123');
   });
+
+  it('should serialize concurrent sync calls on the same file path using withPathLock', async () => {
+    vi.useFakeTimers();
+
+    // 1. Setup file
+    const file = { path: 'lock-test.md', name: 'lock-test.md', extension: 'md' };
+    mockFiles.push(file);
+    fileContents['lock-test.md'] = 'content v1';
+
+    let activeCallCount = 0;
+    let maxConcurrentCalls = 0;
+    let p2Promise: Promise<void> | null = null;
+
+    mockDriveClient.resolveFolderHierarchy.mockResolvedValue('destId');
+    mockDriveClient.findItem.mockImplementation(async (fileName: string, folderId: string, isFolder: boolean) => {
+      // In the first check of createFile it won't exist. On retry, return the created file metadata
+      const hasState = !!JSON.parse(adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] || '{}').files?.['lock-test.md'];
+      if (hasState) {
+        return { id: 'driveFileId123', name: 'lock-test.md', mimeType: 'text/markdown', md5Checksum: CryptoJS.MD5('content v1').toString() };
+      }
+      return null;
+    });
+
+    mockDriveClient.getFileMetadata.mockResolvedValue({
+      id: 'driveFileId123',
+      name: 'lock-test.md',
+      mimeType: 'text/markdown',
+      md5Checksum: CryptoJS.MD5('content v1').toString(),
+      trashed: false
+    });
+    
+    mockDriveClient.createFile = vi.fn().mockImplementation(async () => {
+      activeCallCount++;
+      maxConcurrentCalls = Math.max(maxConcurrentCalls, activeCallCount);
+
+      // Trigger modification and second sync call while p1 is active
+      fileContents['lock-test.md'] = 'content v2';
+      p2Promise = syncManager.syncSingleFile(file as any, 'destId');
+
+      await new Promise(resolve => setTimeout(resolve, 50));
+      activeCallCount--;
+      return 'driveFileId123';
+    });
+
+    // 2. Trigger first sync call
+    const p1 = syncManager.syncSingleFile(file as any, 'destId');
+
+    // Fast forward the first createFile's timer
+    await vi.advanceTimersByTimeAsync(50);
+    await p1;
+
+    // By now p2Promise should have completed its immediate execution (locked)
+    expect(p2Promise).toBeDefined();
+    await p2Promise;
+
+    // The second call was skipped and added to needsRetry.
+    // In finally, it calls debounceSyncFile, which sets a 5000ms timer.
+    // Let's fast forward 5000ms to trigger the retry sync!
+    await vi.advanceTimersByTimeAsync(5000);
+
+    // 3. Assertions
+    expect(maxConcurrentCalls).toBe(1);
+    // First run calls createFile. Second run calls updateFileContent (not createFile)
+    expect(mockDriveClient.createFile).toHaveBeenCalledTimes(1);
+    expect(mockDriveClient.updateFileContent).toHaveBeenCalledWith('driveFileId123', 'content v2');
+
+    vi.useRealTimers();
+  });
 });

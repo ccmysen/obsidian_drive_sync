@@ -23,6 +23,8 @@ export class SyncManager {
   private debounceTimers: Map<string, any> = new Map();
   private lastGlobalDeleteChoice: 'delete' | 'skip' | null = null;
   private lastGlobalDeleteChoiceTime = 0;
+  private activeSyncs: Set<string> = new Set();
+  private needsRetry: Set<string> = new Set();
 
   constructor(app: App, plugin: Plugin, driveClient: GoogleDriveClient) {
     this.app = app;
@@ -100,6 +102,30 @@ export class SyncManager {
     const nameWithoutExt = fileNameWithExt.slice(0, -(ext.length + 1));
     const conflictFileName = `.${nameWithoutExt}.sync-conflict.${ext}`;
     return parentDir ? `${parentDir}/${conflictFileName}` : conflictFileName;
+  }
+
+  // Helper to prevent concurrent operations on the same path
+  private async withPathLock(path: string, callback: () => Promise<void>): Promise<void> {
+    if (this.activeSyncs.has(path)) {
+      this.needsRetry.add(path);
+      return;
+    }
+
+    this.activeSyncs.add(path);
+    try {
+      await callback();
+    } finally {
+      this.activeSyncs.delete(path);
+      if (this.needsRetry.has(path)) {
+        this.needsRetry.delete(path);
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (file instanceof TFile) {
+          const pluginSettings = (this.plugin as any).settings;
+          const dest = pluginSettings.destinationFolderId || pluginSettings.destinationFolderName;
+          this.debounceSyncFile(file, dest);
+        }
+      }
+    }
   }
 
   // Determine if a file path is considered a binary file
@@ -369,162 +395,164 @@ export class SyncManager {
     const pathParts = file.path.split('/');
     if (pathParts.some(part => part.startsWith('.'))) return;
 
-    await this.loadState();
-    const entry = this.state.files[file.path];
-    const { hash: localHash, isBinary, content: localContent } = await this.getFileHash(file);
+    await this.withPathLock(file.path, async () => {
+      await this.loadState();
+      const entry = this.state.files[file.path];
+      const { hash: localHash, isBinary, content: localContent } = await this.getFileHash(file);
 
-    // Skip if already synced and unchanged
-    if (entry && entry.hash === localHash && !entry.deleted) {
-      return;
-    }
-
-    if (DEBUG_LOGGING) {
-      if (!entry) {
-        console.info(`Incremental sync: unseen file (new locally): ${file.path}`);
-      } else if (entry.deleted) {
-        console.info(`Incremental sync: restored file (previously marked as deleted): ${file.path}`);
-      } else if (entry.hash !== localHash) {
-        console.info(`Incremental sync: modified file (hash mismatch): ${file.path}`);
+      // Skip if already synced and unchanged
+      if (entry && entry.hash === localHash && !entry.deleted) {
+        return;
       }
-      console.log(`Incremental sync: syncing file: ${file.path}`);
-    }
 
-    // Check Google Drive for changes first to avoid overwriting remote changes
-    let conflictResolved = false;
-    try {
-      const parentParts = [...pathParts];
-      const fileName = parentParts.pop() || file.name;
-      const parentFolderId = await this.driveClient.resolveFolderHierarchy(parentParts, resolvedFolderId);
-      const remoteFile = await this.driveClient.findItem(fileName, parentFolderId, false);
+      if (DEBUG_LOGGING) {
+        if (!entry) {
+          console.info(`Incremental sync: unseen file (new locally): ${file.path}`);
+        } else if (entry.deleted) {
+          console.info(`Incremental sync: restored file (previously marked as deleted): ${file.path}`);
+        } else if (entry.hash !== localHash) {
+          console.info(`Incremental sync: modified file (hash mismatch): ${file.path}`);
+        }
+        console.log(`Incremental sync: syncing file: ${file.path}`);
+      }
 
-      if (remoteFile && !remoteFile.trashed) {
-        const remoteHash = remoteFile.md5Checksum;
-        
-        if (entry) {
-          const entryHash = entry.hash;
-          if (remoteHash !== entryHash && localHash !== entryHash) {
-            // Case 1 Conflict: Both modified since last sync
-            if (DEBUG_LOGGING) {
-              console.log(`Incremental sync conflict detected for ${file.path}. Merging changes.`);
+      // Check Google Drive for changes first to avoid overwriting remote changes
+      let conflictResolved = false;
+      try {
+        const parentParts = [...pathParts];
+        const fileName = parentParts.pop() || file.name;
+        const parentFolderId = await this.driveClient.resolveFolderHierarchy(parentParts, resolvedFolderId);
+        const remoteFile = await this.driveClient.findItem(fileName, parentFolderId, false);
+
+        if (remoteFile && !remoteFile.trashed) {
+          const remoteHash = remoteFile.md5Checksum;
+          
+          if (entry) {
+            const entryHash = entry.hash;
+            if (remoteHash !== entryHash && localHash !== entryHash) {
+              // Case 1 Conflict: Both modified since last sync
+              if (DEBUG_LOGGING) {
+                console.log(`Incremental sync conflict detected for ${file.path}. Merging changes.`);
+              }
+              if (!isBinary) {
+                const remoteBuffer = await this.driveClient.downloadFile(remoteFile.id);
+                const remoteText = new TextDecoder().decode(remoteBuffer);
+                const mergedText = this.mergeTextConflicts(localContent as string, remoteText);
+                
+                await this.app.vault.modify(file, mergedText);
+                await this.driveClient.updateFileContent(remoteFile.id, mergedText);
+                
+                const mergedHash = CryptoJS.MD5(mergedText).toString();
+                this.state.files[file.path] = {
+                  hash: mergedHash,
+                  driveFileId: remoteFile.id,
+                  lastSyncTime: Date.now(),
+                  deleted: false
+                };
+                await this.saveState();
+              } else {
+                const conflictPath = this.getConflictPath(file.path);
+                
+                await this.ensureLocalDirectory(parentParts.join('/'));
+                await this.app.vault.rename(file, conflictPath);
+                
+                const remoteBuffer = await this.driveClient.downloadFile(remoteFile.id);
+                await this.writeLocalFile(file.path, remoteBuffer, true);
+                
+                const remoteHashCalculated = this.getHashFromContent(remoteBuffer, true);
+                this.state.files[file.path] = {
+                  hash: remoteHashCalculated,
+                  driveFileId: remoteFile.id,
+                  lastSyncTime: Date.now(),
+                  deleted: false
+                };
+                this.state.files[conflictPath] = {
+                  hash: localHash,
+                  driveFileId: '',
+                  lastSyncTime: Date.now(),
+                  deleted: false
+                };
+                await this.saveState();
+              }
+              conflictResolved = true;
             }
-            if (!isBinary) {
-              const remoteBuffer = await this.driveClient.downloadFile(remoteFile.id);
-              const remoteText = new TextDecoder().decode(remoteBuffer);
-              const mergedText = this.mergeTextConflicts(localContent as string, remoteText);
-              
-              await this.app.vault.modify(file, mergedText);
-              await this.driveClient.updateFileContent(remoteFile.id, mergedText);
-              
-              const mergedHash = CryptoJS.MD5(mergedText).toString();
-              this.state.files[file.path] = {
-                hash: mergedHash,
-                driveFileId: remoteFile.id,
-                lastSyncTime: Date.now(),
-                deleted: false
-              };
-              await this.saveState();
-            } else {
-              const conflictPath = this.getConflictPath(file.path);
-              
-              await this.ensureLocalDirectory(parentParts.join('/'));
-              await this.app.vault.rename(file, conflictPath);
-              
-              const remoteBuffer = await this.driveClient.downloadFile(remoteFile.id);
-              await this.writeLocalFile(file.path, remoteBuffer, true);
-              
-              const remoteHashCalculated = this.getHashFromContent(remoteBuffer, true);
-              this.state.files[file.path] = {
-                hash: remoteHashCalculated,
-                driveFileId: remoteFile.id,
-                lastSyncTime: Date.now(),
-                deleted: false
-              };
-              this.state.files[conflictPath] = {
-                hash: localHash,
-                driveFileId: '',
-                lastSyncTime: Date.now(),
-                deleted: false
-              };
-              await this.saveState();
-            }
-            conflictResolved = true;
-          }
-        } else {
-          // Untracked conflict (exists locally and remotely, but not in state cache)
-          if (localHash !== remoteHash) {
-            if (DEBUG_LOGGING) {
-              console.log(`Incremental sync untracked conflict detected for ${file.path}. Merging changes.`);
-            }
-            if (!isBinary) {
-              const remoteBuffer = await this.driveClient.downloadFile(remoteFile.id);
-              const remoteText = new TextDecoder().decode(remoteBuffer);
-              const mergedText = this.mergeTextConflicts(localContent as string, remoteText);
-              
-              await this.app.vault.modify(file, mergedText);
-              await this.driveClient.updateFileContent(remoteFile.id, mergedText);
-              
-              const mergedHash = CryptoJS.MD5(mergedText).toString();
-              this.state.files[file.path] = {
-                hash: mergedHash,
-                driveFileId: remoteFile.id,
-                lastSyncTime: Date.now(),
-                deleted: false
-              };
-              await this.saveState();
-            } else {
-              const conflictPath = this.getConflictPath(file.path);
-              
-              await this.ensureLocalDirectory(parentParts.join('/'));
-              await this.app.vault.rename(file, conflictPath);
-              
-              const remoteBuffer = await this.driveClient.downloadFile(remoteFile.id);
-              await this.writeLocalFile(file.path, remoteBuffer, true);
-              
-              const remoteHashCalculated = this.getHashFromContent(remoteBuffer, true);
-              this.state.files[file.path] = {
-                hash: remoteHashCalculated,
-                driveFileId: remoteFile.id,
-                lastSyncTime: Date.now(),
-                deleted: false
-              };
-              this.state.files[conflictPath] = {
-                hash: localHash,
-                driveFileId: '',
-                lastSyncTime: Date.now(),
-                deleted: false
-              };
-              await this.saveState();
-            }
-            conflictResolved = true;
           } else {
-            // Unchanged/hashes match. Simply register in state cache
-            this.state.files[file.path] = {
-              hash: localHash,
-              driveFileId: remoteFile.id,
-              lastSyncTime: Date.now(),
-              deleted: false
-            };
-            await this.saveState();
-            conflictResolved = true;
+            // Untracked conflict (exists locally and remotely, but not in state cache)
+            if (localHash !== remoteHash) {
+              if (DEBUG_LOGGING) {
+                console.log(`Incremental sync untracked conflict detected for ${file.path}. Merging changes.`);
+              }
+              if (!isBinary) {
+                const remoteBuffer = await this.driveClient.downloadFile(remoteFile.id);
+                const remoteText = new TextDecoder().decode(remoteBuffer);
+                const mergedText = this.mergeTextConflicts(localContent as string, remoteText);
+                
+                await this.app.vault.modify(file, mergedText);
+                await this.driveClient.updateFileContent(remoteFile.id, mergedText);
+                
+                const mergedHash = CryptoJS.MD5(mergedText).toString();
+                this.state.files[file.path] = {
+                  hash: mergedHash,
+                  driveFileId: remoteFile.id,
+                  lastSyncTime: Date.now(),
+                  deleted: false
+                };
+                await this.saveState();
+              } else {
+                const conflictPath = this.getConflictPath(file.path);
+                
+                await this.ensureLocalDirectory(parentParts.join('/'));
+                await this.app.vault.rename(file, conflictPath);
+                
+                const remoteBuffer = await this.driveClient.downloadFile(remoteFile.id);
+                await this.writeLocalFile(file.path, remoteBuffer, true);
+                
+                const remoteHashCalculated = this.getHashFromContent(remoteBuffer, true);
+                this.state.files[file.path] = {
+                  hash: remoteHashCalculated,
+                  driveFileId: remoteFile.id,
+                  lastSyncTime: Date.now(),
+                  deleted: false
+                };
+                this.state.files[conflictPath] = {
+                  hash: localHash,
+                  driveFileId: '',
+                  lastSyncTime: Date.now(),
+                  deleted: false
+                };
+                await this.saveState();
+              }
+              conflictResolved = true;
+            } else {
+              // Unchanged/hashes match. Simply register in state cache
+              this.state.files[file.path] = {
+                hash: localHash,
+                driveFileId: remoteFile.id,
+                lastSyncTime: Date.now(),
+                deleted: false
+              };
+              await this.saveState();
+              conflictResolved = true;
+            }
           }
         }
+      } catch (checkErr) {
+        console.warn(`Failed remote pre-check for incremental sync of ${file.path}:`, checkErr);
       }
-    } catch (checkErr) {
-      console.warn(`Failed remote pre-check for incremental sync of ${file.path}:`, checkErr);
-    }
 
-    if (!conflictResolved) {
-      const driveFileId = await this.syncFileCore(file, resolvedFolderId, entry);
+      if (!conflictResolved) {
+        const driveFileId = await this.syncFileCore(file, resolvedFolderId, entry);
 
-      this.state.files[file.path] = {
-        hash: localHash,
-        driveFileId: driveFileId,
-        lastSyncTime: Date.now(),
-        deleted: false,
-      };
+        this.state.files[file.path] = {
+          hash: localHash,
+          driveFileId: driveFileId,
+          lastSyncTime: Date.now(),
+          deleted: false,
+          };
 
-      await this.saveState();
-    }
+        await this.saveState();
+      }
+    });
   }
 
   // Debounce sync of a single file to avoid spamming calls during typing
@@ -559,65 +587,67 @@ export class SyncManager {
     const pathParts = path.split('/');
     if (pathParts.some(part => part.startsWith('.'))) return;
 
-    // Cancel any pending debounced sync
-    const existingTimer = this.debounceTimers.get(path);
-    if (existingTimer) {
-      clearTimeout(existingTimer);
-      this.debounceTimers.delete(path);
-    }
-
-    await this.loadState();
-    const entry = this.state.files[path];
-    if (entry && !entry.deleted) {
-      if (DEBUG_LOGGING) {
-        console.info(`Incremental sync: local deletion detected for ${path}`);
+    await this.withPathLock(path, async () => {
+      // Cancel any pending debounced sync
+      const existingTimer = this.debounceTimers.get(path);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+        this.debounceTimers.delete(path);
       }
-      
-      const driveFileId = entry.driveFileId;
-      entry.deleted = true;
-      entry.lastSyncTime = Date.now();
-      await this.saveState();
 
-      if (driveFileId) {
-        try {
-          const meta = await this.driveClient.getFileMetadata(driveFileId);
-          if (meta && !meta.trashed) {
-            let choice: 'delete' | 'skip' = 'skip';
-            const now = Date.now();
+      await this.loadState();
+      const entry = this.state.files[path];
+      if (entry && !entry.deleted) {
+        if (DEBUG_LOGGING) {
+          console.info(`Incremental sync: local deletion detected for ${path}`);
+        }
+        
+        const driveFileId = entry.driveFileId;
+        entry.deleted = true;
+        entry.lastSyncTime = Date.now();
+        await this.saveState();
 
-            if (this.lastGlobalDeleteChoice && (now - this.lastGlobalDeleteChoiceTime < 10000)) {
-              choice = this.lastGlobalDeleteChoice;
-            } else {
-              this.lastGlobalDeleteChoice = null;
-              const result = await this.askDeleteChoice(path);
-              choice = result.choice;
-              if (result.applyToAll) {
-                this.lastGlobalDeleteChoice = choice;
-                this.lastGlobalDeleteChoiceTime = now;
+        if (driveFileId) {
+          try {
+            const meta = await this.driveClient.getFileMetadata(driveFileId);
+            if (meta && !meta.trashed) {
+              let choice: 'delete' | 'skip' = 'skip';
+              const now = Date.now();
+
+              if (this.lastGlobalDeleteChoice && (now - this.lastGlobalDeleteChoiceTime < 10000)) {
+                choice = this.lastGlobalDeleteChoice;
+              } else {
+                this.lastGlobalDeleteChoice = null;
+                const result = await this.askDeleteChoice(path);
+                choice = result.choice;
+                if (result.applyToAll) {
+                  this.lastGlobalDeleteChoice = choice;
+                  this.lastGlobalDeleteChoiceTime = now;
+                }
+              }
+
+              if (choice === 'delete') {
+                if (DEBUG_LOGGING) {
+                  console.info(`Applying deletion on Google Drive for: ${path}`);
+                }
+                await this.driveClient.deleteItem(driveFileId);
+              } else {
+                if (DEBUG_LOGGING) {
+                  console.info(`Skipping deletion on Google Drive for: ${path}`);
+                }
+                await this.loadState();
+                if (this.state.files[path]) {
+                  this.state.files[path].driveFileId = '';
+                  await this.saveState();
+                }
               }
             }
-
-            if (choice === 'delete') {
-              if (DEBUG_LOGGING) {
-                console.info(`Applying deletion on Google Drive for: ${path}`);
-              }
-              await this.driveClient.deleteItem(driveFileId);
-            } else {
-              if (DEBUG_LOGGING) {
-                console.info(`Skipping deletion on Google Drive for: ${path}`);
-              }
-              await this.loadState();
-              if (this.state.files[path]) {
-                this.state.files[path].driveFileId = '';
-                await this.saveState();
-              }
-            }
+          } catch (e) {
+            console.error(`Failed to propagate deletion for ${path} on Google Drive:`, e);
           }
-        } catch (e) {
-          console.error(`Failed to propagate deletion for ${path} on Google Drive:`, e);
         }
       }
-    }
+    });
   }
 
   // Handle a local rename/move event immediately
@@ -932,48 +962,105 @@ export class SyncManager {
       const pathParts = path.split('/');
       if (pathParts.some(part => part.startsWith('.'))) continue;
 
-      const localFile = this.app.vault.getAbstractFileByPath(path);
-      const remoteFile = remoteFilesByPath.get(path);
-      const entry = this.state.files[path];
+      await this.withPathLock(path, async () => {
+        const localFile = this.app.vault.getAbstractFileByPath(path);
+        const remoteFile = remoteFilesByPath.get(path);
+        const entry = this.state.files[path];
 
-      const localExists = localFile instanceof TFile;
-      const remoteExists = !!remoteFile;
-      const stateExists = entry && !entry.deleted;
+        const localExists = localFile instanceof TFile;
+        const remoteExists = !!remoteFile;
+        const stateExists = entry && !entry.deleted;
+        const isBinary = this.isBinaryFile(path);
 
-      try {
-        // Case 1: Exists locally, remotely, and in state
-        if (localExists && remoteExists && stateExists) {
-          const { hash: localHash } = await this.getFileHash(localFile as TFile);
-          const remoteHash = remoteFile.md5Checksum;
-          const entryHash = entry.hash;
+        try {
+          // Case 1: Exists locally, remotely, and in state
+          if (localExists && remoteExists && stateExists) {
+            const { hash: localHash } = await this.getFileHash(localFile as TFile);
+            const remoteHash = remoteFile.md5Checksum;
+            const entryHash = entry.hash;
 
-          if (localHash === entryHash && remoteHash === entryHash) {
-            skipCount++;
-          } else if (localHash !== entryHash && remoteHash === entryHash) {
-            await this.syncFileCore(localFile as TFile, resolvedFolderId, entry);
-            entry.hash = localHash;
-            entry.lastSyncTime = Date.now();
-            await this.saveState();
-            uploadCount++;
-          } else if (localHash === entryHash && remoteHash !== entryHash) {
-            const buffer = await this.driveClient.downloadFile(remoteFile.id);
-            const isBinary = this.isBinaryFile(path);
-            await this.writeLocalFile(path, buffer, isBinary);
-            
-            entry.hash = remoteHash;
-            entry.lastSyncTime = Date.now();
-            await this.saveState();
-            downloadCount++;
-          } else {
-            // Conflict (both modified since last sync)
-            if (localHash === remoteHash) {
+            if (localHash === entryHash && remoteHash === entryHash) {
+              skipCount++;
+            } else if (localHash !== entryHash && remoteHash === entryHash) {
+              const driveFileId = await this.syncFileCore(localFile as TFile, resolvedFolderId, entry);
               entry.hash = localHash;
+              entry.driveFileId = driveFileId;
               entry.lastSyncTime = Date.now();
+              await this.saveState();
+              uploadCount++;
+            } else if (localHash === entryHash && remoteHash !== entryHash) {
+              if (DEBUG_LOGGING) {
+                console.log(`Case 1: Path ${path} modified remotely only. Downloading updated remote file.`);
+              }
+              const buffer = await this.driveClient.downloadFile(remoteFile.id);
+              await this.writeLocalFile(path, buffer, isBinary);
+              
+              entry.hash = remoteHash;
+              entry.lastSyncTime = Date.now();
+              await this.saveState();
+              downloadCount++;
+            } else {
+              // Conflict (both modified since last sync)
+              if (localHash === remoteHash) {
+                entry.hash = localHash;
+                entry.lastSyncTime = Date.now();
+                await this.saveState();
+                skipCount++;
+              } else {
+                conflictCount++;
+                if (!isBinary) {
+                  const localText = await this.app.vault.read(localFile as TFile);
+                  const remoteBuffer = await this.driveClient.downloadFile(remoteFile.id);
+                  const remoteText = new TextDecoder().decode(remoteBuffer);
+                  const mergedText = this.mergeTextConflicts(localText, remoteText);
+                  
+                  await this.app.vault.modify(localFile as TFile, mergedText);
+                  await this.driveClient.updateFileContent(remoteFile.id, mergedText);
+                  
+                  const mergedHash = CryptoJS.MD5(mergedText).toString();
+                  entry.hash = mergedHash;
+                  entry.lastSyncTime = Date.now();
+                  await this.saveState();
+                } else {
+                  const conflictPath = this.getConflictPath(path);
+                  
+                  await this.ensureLocalDirectory(pathParts.slice(0, -1).join('/'));
+                  await this.app.vault.rename(localFile as TFile, conflictPath);
+                  
+                  const remoteBuffer = await this.driveClient.downloadFile(remoteFile.id);
+                  await this.writeLocalFile(path, remoteBuffer, true);
+                  
+                  const remoteHashCalculated = this.getHashFromContent(remoteBuffer, true);
+                  entry.hash = remoteHashCalculated;
+                  entry.lastSyncTime = Date.now();
+                  
+                  this.state.files[conflictPath] = {
+                    hash: localHash,
+                    driveFileId: '',
+                    lastSyncTime: Date.now(),
+                    deleted: false
+                  };
+                  await this.saveState();
+                }
+              }
+            }
+          }
+          // Case 2: Exists locally and remotely, but NOT in active state (untracked conflict/union)
+          else if (localExists && remoteExists && !stateExists) {
+            const { hash: localHash } = await this.getFileHash(localFile as TFile);
+            const remoteHash = remoteFile.md5Checksum;
+
+            if (localHash === remoteHash) {
+              this.state.files[path] = {
+                hash: localHash,
+                driveFileId: remoteFile.id,
+                lastSyncTime: Date.now(),
+                deleted: false
+              };
               await this.saveState();
               skipCount++;
             } else {
               conflictCount++;
-              const isBinary = this.isBinaryFile(path);
               if (!isBinary) {
                 const localText = await this.app.vault.read(localFile as TFile);
                 const remoteBuffer = await this.driveClient.downloadFile(remoteFile.id);
@@ -984,8 +1071,12 @@ export class SyncManager {
                 await this.driveClient.updateFileContent(remoteFile.id, mergedText);
                 
                 const mergedHash = CryptoJS.MD5(mergedText).toString();
-                entry.hash = mergedHash;
-                entry.lastSyncTime = Date.now();
+                this.state.files[path] = {
+                  hash: mergedHash,
+                  driveFileId: remoteFile.id,
+                  lastSyncTime: Date.now(),
+                  deleted: false
+                };
                 await this.saveState();
               } else {
                 const conflictPath = this.getConflictPath(path);
@@ -997,9 +1088,12 @@ export class SyncManager {
                 await this.writeLocalFile(path, remoteBuffer, true);
                 
                 const remoteHashCalculated = this.getHashFromContent(remoteBuffer, true);
-                entry.hash = remoteHashCalculated;
-                entry.lastSyncTime = Date.now();
-                
+                this.state.files[path] = {
+                  hash: remoteHashCalculated,
+                  driveFileId: remoteFile.id,
+                  lastSyncTime: Date.now(),
+                  deleted: false
+                };
                 this.state.files[conflictPath] = {
                   hash: localHash,
                   driveFileId: '',
@@ -1010,164 +1104,102 @@ export class SyncManager {
               }
             }
           }
-        }
-        // Case 2: Exists locally and remotely, but NOT in active state (untracked conflict/union)
-        else if (localExists && remoteExists && !stateExists) {
-          const { hash: localHash } = await this.getFileHash(localFile as TFile);
-          const remoteHash = remoteFile.md5Checksum;
+          // Case 3: Exists locally and in state, but NOT on Google Drive (Remote deletion)
+          else if (localExists && stateExists && !remoteExists) {
+            const { hash: localHash } = await this.getFileHash(localFile as TFile);
+            const entryHash = entry.hash;
 
-          if (localHash === remoteHash) {
+            if (localHash === entryHash) {
+              await this.app.vault.delete(localFile as TFile);
+              entry.deleted = true;
+              entry.lastSyncTime = Date.now();
+              await this.saveState();
+              deleteCount++;
+            } else {
+              const driveFileId = await this.syncFileCore(localFile as TFile, resolvedFolderId, entry);
+              entry.driveFileId = driveFileId;
+              entry.hash = localHash;
+              entry.lastSyncTime = Date.now();
+              await this.saveState();
+              uploadCount++;
+            }
+          }
+          // Case 4: Exists remotely and in state, but NOT locally (Local deletion)
+          else if (remoteExists && stateExists && !localExists) {
+            const remoteHash = remoteFile.md5Checksum;
+            const entryHash = entry.hash;
+
+            if (remoteHash === entryHash) {
+              let choice: 'delete' | 'skip' = 'skip';
+              if (globalDeleteChoice) {
+                choice = globalDeleteChoice;
+              } else {
+                const result = await this.askDeleteChoice(path);
+                choice = result.choice;
+                if (result.applyToAll) {
+                  globalDeleteChoice = choice;
+                }
+              }
+
+              if (choice === 'delete') {
+                await this.driveClient.deleteItem(remoteFile.id);
+              } else {
+                entry.driveFileId = '';
+              }
+              entry.deleted = true;
+              entry.lastSyncTime = Date.now();
+              await this.saveState();
+              deleteCount++;
+            } else {
+              const buffer = await this.driveClient.downloadFile(remoteFile.id);
+              await this.writeLocalFile(path, buffer, isBinary);
+              
+              entry.hash = remoteHash;
+              entry.lastSyncTime = Date.now();
+              await this.saveState();
+              downloadCount++;
+            }
+          }
+          // Case 5: New Local File (exists locally, absent remotely, absent in active state)
+          else if (localExists && !remoteExists && !stateExists) {
+            const { hash: localHash } = await this.getFileHash(localFile as TFile);
+            const driveFileId = await this.syncFileCore(localFile as TFile, resolvedFolderId, entry);
             this.state.files[path] = {
               hash: localHash,
+              driveFileId: driveFileId,
+              lastSyncTime: Date.now(),
+              deleted: false
+            };
+            await this.saveState();
+            uploadCount++;
+          }
+          // Case 6: New Remote File (exists remotely, absent locally, absent in active state)
+          else if (remoteExists && !localExists && !stateExists) {
+            const buffer = await this.driveClient.downloadFile(remoteFile.id);
+            await this.writeLocalFile(path, buffer, isBinary);
+
+            const remoteHashCalculated = this.getHashFromContent(buffer, isBinary);
+            this.state.files[path] = {
+              hash: remoteHashCalculated,
               driveFileId: remoteFile.id,
               lastSyncTime: Date.now(),
               deleted: false
             };
             await this.saveState();
-            skipCount++;
-          } else {
-            conflictCount++;
-            const isBinary = this.isBinaryFile(path);
-            if (!isBinary) {
-              const localText = await this.app.vault.read(localFile as TFile);
-              const remoteBuffer = await this.driveClient.downloadFile(remoteFile.id);
-              const remoteText = new TextDecoder().decode(remoteBuffer);
-              const mergedText = this.mergeTextConflicts(localText, remoteText);
-              
-              await this.app.vault.modify(localFile as TFile, mergedText);
-              await this.driveClient.updateFileContent(remoteFile.id, mergedText);
-              
-              const mergedHash = CryptoJS.MD5(mergedText).toString();
-              this.state.files[path] = {
-                hash: mergedHash,
-                driveFileId: remoteFile.id,
-                lastSyncTime: Date.now(),
-                deleted: false
-              };
-              await this.saveState();
-            } else {
-              const conflictPath = this.getConflictPath(path);
-              
-              await this.ensureLocalDirectory(pathParts.slice(0, -1).join('/'));
-              await this.app.vault.rename(localFile as TFile, conflictPath);
-              
-              const remoteBuffer = await this.driveClient.downloadFile(remoteFile.id);
-              await this.writeLocalFile(path, remoteBuffer, true);
-              
-              const remoteHashCalculated = this.getHashFromContent(remoteBuffer, true);
-              this.state.files[path] = {
-                hash: remoteHashCalculated,
-                driveFileId: remoteFile.id,
-                lastSyncTime: Date.now(),
-                deleted: false
-              };
-              this.state.files[conflictPath] = {
-                hash: localHash,
-                driveFileId: '',
-                lastSyncTime: Date.now(),
-                deleted: false
-              };
-              await this.saveState();
-            }
-          }
-        }
-        // Case 3: Exists locally and in state, but NOT on Google Drive (Remote deletion)
-        else if (localExists && stateExists && !remoteExists) {
-          const { hash: localHash } = await this.getFileHash(localFile as TFile);
-          const entryHash = entry.hash;
-
-          if (localHash === entryHash) {
-            await this.app.vault.delete(localFile as TFile);
-            entry.deleted = true;
-            entry.lastSyncTime = Date.now();
-            await this.saveState();
-            deleteCount++;
-          } else {
-            const driveFileId = await this.syncFileCore(localFile as TFile, resolvedFolderId, entry);
-            entry.driveFileId = driveFileId;
-            entry.hash = localHash;
-            entry.lastSyncTime = Date.now();
-            await this.saveState();
-            uploadCount++;
-          }
-        }
-        // Case 4: Exists remotely and in state, but NOT locally (Local deletion)
-        else if (remoteExists && stateExists && !localExists) {
-          const remoteHash = remoteFile.md5Checksum;
-          const entryHash = entry.hash;
-
-          if (remoteHash === entryHash) {
-            let choice: 'delete' | 'skip' = 'skip';
-            if (globalDeleteChoice) {
-              choice = globalDeleteChoice;
-            } else {
-              const result = await this.askDeleteChoice(path);
-              choice = result.choice;
-              if (result.applyToAll) {
-                globalDeleteChoice = choice;
-              }
-            }
-
-            if (choice === 'delete') {
-              await this.driveClient.deleteItem(remoteFile.id);
-            } else {
-              entry.driveFileId = '';
-            }
-            entry.deleted = true;
-            entry.lastSyncTime = Date.now();
-            await this.saveState();
-            deleteCount++;
-          } else {
-            const buffer = await this.driveClient.downloadFile(remoteFile.id);
-            const isBinary = this.isBinaryFile(path);
-            await this.writeLocalFile(path, buffer, isBinary);
-            
-            entry.hash = remoteHash;
-            entry.lastSyncTime = Date.now();
-            await this.saveState();
             downloadCount++;
           }
+          // Case 7: Fully deleted (state exists but files absent everywhere)
+          else if (stateExists && !localExists && !remoteExists) {
+            entry.deleted = true;
+            entry.lastSyncTime = Date.now();
+            await this.saveState();
+            deleteCount++;
+          }
+        } catch (err) {
+          console.error(`Failed to 2-way sync path ${path}:`, err);
+          failCount++;
         }
-        // Case 5: New Local File (exists locally, absent remotely, absent in active state)
-        else if (localExists && !remoteExists && !stateExists) {
-          const { hash: localHash } = await this.getFileHash(localFile as TFile);
-          const driveFileId = await this.syncFileCore(localFile as TFile, resolvedFolderId, entry);
-          this.state.files[path] = {
-            hash: localHash,
-            driveFileId: driveFileId,
-            lastSyncTime: Date.now(),
-            deleted: false
-          };
-          await this.saveState();
-          uploadCount++;
-        }
-        // Case 6: New Remote File (exists remotely, absent locally, absent in active state)
-        else if (remoteExists && !localExists && !stateExists) {
-          const buffer = await this.driveClient.downloadFile(remoteFile.id);
-          const isBinary = this.isBinaryFile(path);
-          await this.writeLocalFile(path, buffer, isBinary);
-
-          const remoteHashCalculated = this.getHashFromContent(buffer, isBinary);
-          this.state.files[path] = {
-            hash: remoteHashCalculated,
-            driveFileId: remoteFile.id,
-            lastSyncTime: Date.now(),
-            deleted: false
-          };
-          await this.saveState();
-          downloadCount++;
-        }
-        // Case 7: Fully deleted (state exists but files absent everywhere)
-        else if (stateExists && !localExists && !remoteExists) {
-          entry.deleted = true;
-          entry.lastSyncTime = Date.now();
-          await this.saveState();
-          deleteCount++;
-        }
-      } catch (err) {
-        console.error(`Failed to 2-way sync path ${path}:`, err);
-        failCount++;
-      }
+      });
     }
 
     const summary = `Sync complete! Uploaded: ${uploadCount}, Downloaded: ${downloadCount}, Conflicts merged: ${conflictCount}, Unchanged: ${skipCount}, Deletions processed: ${deleteCount}, Failed: ${failCount}`;
