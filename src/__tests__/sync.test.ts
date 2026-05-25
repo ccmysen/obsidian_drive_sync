@@ -527,4 +527,53 @@ describe('SyncManager', () => {
     expect(savedState.files['FolderB/test.md']).toBeDefined();
     expect(savedState.files['FolderB/test.md'].driveFileId).toBe('driveId123');
   });
+
+  it('should heuristically pair and reparent renamed files offline during runSync', async () => {
+    const file = {
+      path: 'FolderB/note.md',
+      name: 'note.md',
+      extension: 'md',
+    };
+    mockFiles.push(file);
+    fileContents['FolderB/note.md'] = 'updated content';
+
+    // Add old file to state
+    const existingState = {
+      files: {
+        'FolderA/note.md': {
+          hash: 'oldHash',
+          driveFileId: 'driveIdNote',
+          lastSyncTime: Date.now(),
+          deleted: false,
+        },
+      },
+    };
+    adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] = JSON.stringify(existingState);
+
+    // Mock parent folder resolution and metadata checks
+    mockDriveClient.resolveFolderHierarchy.mockResolvedValue('FolderB_Id');
+    mockDriveClient.getFolderMetadata.mockResolvedValue({
+      id: 'destId',
+      name: 'MyFolder',
+      mimeType: 'application/vnd.google-apps.folder',
+      trashed: false
+    });
+    mockDriveClient.getFileParents = vi.fn().mockResolvedValue(['FolderA_Id']);
+    mockDriveClient.moveFile = vi.fn().mockResolvedValue(undefined);
+    mockDriveClient.updateFileContent = vi.fn().mockResolvedValue(undefined);
+
+    await syncManager.runSync('destId');
+
+    // 1. Verify file was moved/reparented on Drive using its cached ID
+    expect(mockDriveClient.moveFile).toHaveBeenCalledWith('driveIdNote', 'FolderA_Id', 'FolderB_Id', 'note.md');
+
+    // 2. Verify file content was updated on Drive
+    expect(mockDriveClient.updateFileContent).toHaveBeenCalledWith('driveIdNote', 'updated content');
+
+    // 3. Verify state cache removes old path and adds new path
+    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] || '{}');
+    expect(savedState.files['FolderA/note.md']).toBeUndefined();
+    expect(savedState.files['FolderB/note.md']).toBeDefined();
+    expect(savedState.files['FolderB/note.md'].driveFileId).toBe('driveIdNote');
+  });
 });

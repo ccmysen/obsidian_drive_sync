@@ -442,26 +442,132 @@ export class SyncManager {
 
     await this.loadState();
 
-    const localFiles = this.app.vault.getFiles();
-    const localFilePaths = new Set<string>();
+    const localFiles = this.app.vault.getFiles().filter(file => {
+      const pathParts = file.path.split('/');
+      return !pathParts.some(part => part.startsWith('.'));
+    });
+    const localFilePaths = new Set(localFiles.map(f => f.path));
+    const excludedDotfilesCount = this.app.vault.getFiles().length - localFiles.length;
 
     let uploadCount = 0;
     let skipMd5MatchCount = 0;
-    let excludedDotfilesCount = 0;
     let failCount = 0;
+    let deleteMarkCount = 0;
 
-    // 1. Scan and upload/update local files
-    for (const file of localFiles) {
-      const pathParts = file.path.split('/');
-      // Exclude hidden files or folders (e.g. .obsidian config files or nested dotfolders)
-      if (pathParts.some(part => part.startsWith('.'))) {
-        excludedDotfilesCount++;
-        continue;
+    // 1. Identify missing files (present in active state but not locally)
+    const missingLocally = new Map<string, { path: string, entry: SyncEntry }[]>();
+    for (const [path, entry] of Object.entries(this.state.files)) {
+      if (!entry.deleted && !localFilePaths.has(path)) {
+        const filename = path.split('/').pop() || '';
+        if (filename) {
+          if (!missingLocally.has(filename)) {
+            missingLocally.set(filename, []);
+          }
+          missingLocally.get(filename)!.push({ path, entry });
+        }
       }
+    }
 
-      localFilePaths.add(file.path);
+    // 2. Identify new files (locally present but not in active state)
+    const newLocally = new Map<string, TFile[]>();
+    const filesToUploadDirectly: TFile[] = [];
+
+    for (const file of localFiles) {
       const entry = this.state.files[file.path];
+      if (!entry || entry.deleted) {
+        const filename = file.name;
+        if (!newLocally.has(filename)) {
+          newLocally.set(filename, []);
+        }
+        newLocally.get(filename)!.push(file);
+      } else {
+        // Already tracked and not deleted - process normally (check for updates)
+        filesToUploadDirectly.push(file);
+      }
+    }
 
+    // 3. Match moved/renamed files using the filename heuristic
+    const pairedNewFiles = new Set<string>();
+    const pairedOldPaths = new Set<string>();
+
+    for (const [filename, newFilesList] of newLocally.entries()) {
+      const oldFilesList = missingLocally.get(filename);
+      if (oldFilesList && oldFilesList.length > 0) {
+        // Pair them up sequentially
+        while (newFilesList.length > 0 && oldFilesList.length > 0) {
+          const newFile = newFilesList.pop();
+          const oldFile = oldFilesList.pop();
+          if (newFile && oldFile) {
+            pairedNewFiles.add(newFile.path);
+            pairedOldPaths.add(oldFile.path);
+
+            if (DEBUG_LOGGING) {
+              console.info(`Heuristic match: renamed/moved file detected offline from ${oldFile.path} to ${newFile.path}`);
+            }
+
+            try {
+              // Perform the move/reparenting logic on Google Drive
+              const driveFileId = oldFile.entry.driveFileId;
+              const pathParts = newFile.path.split('/');
+              const fileName = pathParts.pop() || newFile.name;
+              const newParentFolderId = await this.driveClient.resolveFolderHierarchy(pathParts, resolvedFolderId);
+
+              const parents = await this.driveClient.getFileParents(driveFileId);
+              if (parents.length > 0) {
+                const oldParentId = parents[0];
+                if (oldParentId && oldParentId !== newParentFolderId) {
+                  await this.driveClient.moveFile(driveFileId, oldParentId, newParentFolderId, fileName);
+                } else if (filename !== fileName) {
+                  await this.driveClient.renameItem(driveFileId, fileName);
+                }
+              } else {
+                // Fallback to uploading
+                await this.syncFileCore(newFile, resolvedFolderId, oldFile.entry);
+              }
+
+              // Update content if hash changed
+              const { hash, content } = await this.getFileHash(newFile);
+              if (oldFile.entry.hash !== hash) {
+                if (DEBUG_LOGGING) {
+                  console.log(`Contents of heuristically matched file ${newFile.path} changed. Updating on Drive.`);
+                }
+                await this.driveClient.updateFileContent(driveFileId, content);
+              }
+
+              // Update state
+              delete this.state.files[oldFile.path];
+              this.state.files[newFile.path] = {
+                hash: hash,
+                driveFileId: driveFileId,
+                lastSyncTime: Date.now(),
+                deleted: false,
+              };
+              await this.saveState();
+              uploadCount++;
+
+            } catch (err) {
+              console.error(`Heuristic rename sync failed from ${oldFile.path} to ${newFile.path}:`, err);
+              // Fallback to treating them as independent delete + create
+              pairedNewFiles.delete(newFile.path);
+              pairedOldPaths.delete(oldFile.path);
+            }
+          }
+        }
+      }
+    }
+
+    // 4. Process remaining new files (unpaired)
+    for (const [filename, newFilesList] of newLocally.entries()) {
+      for (const file of newFilesList) {
+        if (!pairedNewFiles.has(file.path)) {
+          filesToUploadDirectly.push(file);
+        }
+      }
+    }
+
+    // 5. Normal Scan for files to upload or update
+    for (const file of filesToUploadDirectly) {
+      const entry = this.state.files[file.path];
       try {
         const { hash } = await this.getFileHash(file);
 
@@ -495,7 +601,6 @@ export class SyncManager {
           deleted: false,
         };
 
-        // Incremental save
         await this.saveState();
         uploadCount++;
       } catch (e) {
@@ -504,19 +609,20 @@ export class SyncManager {
       }
     }
 
-    // 2. Scan for deleted files (exist in state but not locally)
-    let deleteMarkCount = 0;
-    for (const path of Object.keys(this.state.files)) {
-      if (!localFilePaths.has(path)) {
-        const entry = this.state.files[path];
-        if (entry && !entry.deleted) {
-          if (DEBUG_LOGGING) {
-            console.info(`Deleted file (exists in state but missing locally): ${path}`);
+    // 6. Process remaining missing files (unpaired) and mark as deleted
+    for (const [filename, oldFilesList] of missingLocally.entries()) {
+      for (const oldFile of oldFilesList) {
+        if (!pairedOldPaths.has(oldFile.path)) {
+          const entry = this.state.files[oldFile.path];
+          if (entry && !entry.deleted) {
+            if (DEBUG_LOGGING) {
+              console.info(`Deleted file (exists in state but missing locally): ${oldFile.path}`);
+            }
+            entry.deleted = true;
+            entry.lastSyncTime = Date.now();
+            await this.saveState();
+            deleteMarkCount++;
           }
-          entry.deleted = true;
-          entry.lastSyncTime = Date.now();
-          await this.saveState(); // Incremental save
-          deleteMarkCount++;
         }
       }
     }
