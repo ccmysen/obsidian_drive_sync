@@ -454,6 +454,10 @@ describe('SyncManager', () => {
     };
     adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] = JSON.stringify(existingState);
 
+    // Mock askDeleteChoice to resolve immediately so it doesn't hang
+    const askDeleteSpy = vi.spyOn(syncManager as any, 'askDeleteChoice')
+      .mockResolvedValue({ choice: 'skip', applyToAll: false });
+
     // Trigger a debounced sync, then immediately delete
     syncManager.debounceSyncFile(file as any, 'destId');
     await syncManager.handleLocalDeletion('del.md');
@@ -746,5 +750,56 @@ describe('SyncManager', () => {
     const savedState = JSON.parse(adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] || '{}');
     expect(savedState.files['file1.md'].deleted).toBe(true);
     expect(savedState.files['file2.md'].deleted).toBe(true);
+  });
+
+  it('should propagate deletion to Drive in real-time on handleLocalDeletion if confirmed', async () => {
+    const existingState = {
+      files: {
+        'del.md': {
+          hash: 'hash123',
+          driveFileId: 'driveId123',
+          lastSyncTime: Date.now(),
+          deleted: false,
+        },
+      },
+    };
+    adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] = JSON.stringify(existingState);
+
+    const askDeleteSpy = vi.spyOn(syncManager as any, 'askDeleteChoice')
+      .mockResolvedValue({ choice: 'delete', applyToAll: false });
+
+    await syncManager.handleLocalDeletion('del.md');
+
+    expect(askDeleteSpy).toHaveBeenCalledWith('del.md');
+    expect(mockDriveClient.deleteItem).toHaveBeenCalledWith('driveId123');
+
+    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] || '{}');
+    expect(savedState.files['del.md'].deleted).toBe(true);
+  });
+
+  it('should skip deletion and clear driveFileId in real-time on handleLocalDeletion if skipped', async () => {
+    const existingState = {
+      files: {
+        'del.md': {
+          hash: 'hash123',
+          driveFileId: 'driveId123',
+          lastSyncTime: Date.now(),
+          deleted: false,
+        },
+      },
+    };
+    adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] = JSON.stringify(existingState);
+
+    const askDeleteSpy = vi.spyOn(syncManager as any, 'askDeleteChoice')
+      .mockResolvedValue({ choice: 'skip', applyToAll: false });
+
+    await syncManager.handleLocalDeletion('del.md');
+
+    expect(askDeleteSpy).toHaveBeenCalledWith('del.md');
+    expect(mockDriveClient.deleteItem).not.toHaveBeenCalled();
+
+    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] || '{}');
+    expect(savedState.files['del.md'].deleted).toBe(true);
+    expect(savedState.files['del.md'].driveFileId).toBe('');
   });
 });

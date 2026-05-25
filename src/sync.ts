@@ -21,6 +21,8 @@ export class SyncManager {
   private stateFilePath: string;
   private state: SyncState = { files: {} };
   private debounceTimers: Map<string, any> = new Map();
+  private lastGlobalDeleteChoice: 'delete' | 'skip' | null = null;
+  private lastGlobalDeleteChoiceTime = 0;
 
   constructor(app: App, plugin: Plugin, driveClient: GoogleDriveClient) {
     this.app = app;
@@ -321,9 +323,51 @@ export class SyncManager {
       if (DEBUG_LOGGING) {
         console.info(`Incremental sync: local deletion detected for ${path}`);
       }
+      
+      const driveFileId = entry.driveFileId;
       entry.deleted = true;
       entry.lastSyncTime = Date.now();
       await this.saveState();
+
+      if (driveFileId) {
+        try {
+          const meta = await this.driveClient.getFileMetadata(driveFileId);
+          if (meta && !meta.trashed) {
+            let choice: 'delete' | 'skip' = 'skip';
+            const now = Date.now();
+
+            if (this.lastGlobalDeleteChoice && (now - this.lastGlobalDeleteChoiceTime < 10000)) {
+              choice = this.lastGlobalDeleteChoice;
+            } else {
+              this.lastGlobalDeleteChoice = null;
+              const result = await this.askDeleteChoice(path);
+              choice = result.choice;
+              if (result.applyToAll) {
+                this.lastGlobalDeleteChoice = choice;
+                this.lastGlobalDeleteChoiceTime = now;
+              }
+            }
+
+            if (choice === 'delete') {
+              if (DEBUG_LOGGING) {
+                console.info(`Applying deletion on Google Drive for: ${path}`);
+              }
+              await this.driveClient.deleteItem(driveFileId);
+            } else {
+              if (DEBUG_LOGGING) {
+                console.info(`Skipping deletion on Google Drive for: ${path}`);
+              }
+              await this.loadState();
+              if (this.state.files[path]) {
+                this.state.files[path].driveFileId = '';
+                await this.saveState();
+              }
+            }
+          }
+        } catch (e) {
+          console.error(`Failed to propagate deletion for ${path} on Google Drive:`, e);
+        }
+      }
     }
   }
 
