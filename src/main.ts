@@ -75,7 +75,7 @@ export default class LoggingPlugin extends Plugin {
         menu.addItem((item) => {
           item
             .setTitle('Force Google Drive sync')
-            .setIcon('cloud-sync')
+            .setIcon('sync')
             .onClick(async () => {
               console.log("Obsidian Drive Sync: 'Force Google Drive sync' clicked from editor-menu.");
               if (this.settings.accessToken && this.settings.refreshToken) {
@@ -106,7 +106,7 @@ export default class LoggingPlugin extends Plugin {
         menu.addItem((item) => {
           item
             .setTitle('Force Google Drive sync')
-            .setIcon('cloud-sync')
+            .setIcon('sync')
             .onClick(async () => {
               console.log("Obsidian Drive Sync: 'Force Google Drive sync' clicked from file-menu.");
               if (this.settings.accessToken && this.settings.refreshToken) {
