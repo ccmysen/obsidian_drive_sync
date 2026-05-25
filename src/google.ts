@@ -116,8 +116,11 @@ export class GoogleDriveClient {
         return { id: data.id, name: data.name, mimeType: data.mimeType, trashed: data.trashed };
       }
       return null;
-    } catch (e) {
-      return null;
+    } catch (e: any) {
+      if (e.message && e.message.includes('status 404')) {
+        return null;
+      }
+      throw e;
     }
   }
 
@@ -236,11 +239,11 @@ export class GoogleDriveClient {
         method: 'GET',
       });
       return res.json.parents || [];
-    } catch (e) {
-      if (DEBUG_LOGGING) {
-        console.error(`Failed to get parents for file ${fileId}:`, e);
+    } catch (e: any) {
+      if (e.message && e.message.includes('status 404')) {
+        return [];
       }
-      return [];
+      throw e;
     }
   }
 
@@ -276,8 +279,11 @@ export class GoogleDriveClient {
         };
       }
       return null;
-    } catch (e) {
-      return null;
+    } catch (e: any) {
+      if (e.message && e.message.includes('status 404')) {
+        return null;
+      }
+      throw e;
     }
   }
 

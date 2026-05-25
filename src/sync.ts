@@ -49,17 +49,13 @@ export class SyncManager {
       const currentFolderId = queue.shift();
       if (!currentFolderId) continue;
       
-      try {
-        const items = await this.driveClient.listFilesInFolder(currentFolderId);
-        for (const item of items) {
-          if (item.mimeType === 'application/vnd.google-apps.folder') {
-            queue.push(item.id);
-          } else {
-            remoteFiles.set(item.id, item);
-          }
+      const items = await this.driveClient.listFilesInFolder(currentFolderId);
+      for (const item of items) {
+        if (item.mimeType === 'application/vnd.google-apps.folder') {
+          queue.push(item.id);
+        } else {
+          remoteFiles.set(item.id, item);
         }
-      } catch (e) {
-        console.error(`Failed to list files in folder ${currentFolderId}:`, e);
       }
     }
     return remoteFiles;
