@@ -1026,4 +1026,93 @@ describe('SyncManager', () => {
     expect(savedState.files['FolderB/test.md']).toBeDefined();
     expect(savedState.files['FolderB/test.md'].driveFileId).toBe('driveId123');
   });
+
+  it('should detect remote changes first and resolve conflict on single file incremental sync', async () => {
+    // 1. Setup local file and state
+    const file = { path: 'conflict.md', name: 'conflict.md', extension: 'md' };
+    mockFiles.push(file);
+    fileContents['conflict.md'] = 'local changes';
+
+    const existingState = {
+      files: {
+        'conflict.md': {
+          hash: CryptoJS.MD5('original content').toString(),
+          driveFileId: 'driveId123',
+          lastSyncTime: Date.now(),
+          deleted: false,
+        },
+      },
+    };
+    adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] = JSON.stringify(existingState);
+
+    // Mock Google Drive client to return remote modified version
+    mockDriveClient.resolveFolderHierarchy.mockResolvedValue('destId');
+    mockDriveClient.findItem.mockResolvedValue({
+      id: 'driveId123',
+      name: 'conflict.md',
+      mimeType: 'text/markdown',
+      md5Checksum: CryptoJS.MD5('remote changes').toString()
+    });
+    mockDriveClient.getFileMetadata.mockResolvedValue({
+      id: 'driveId123',
+      name: 'conflict.md',
+      mimeType: 'text/markdown',
+      md5Checksum: CryptoJS.MD5('remote changes').toString(),
+      trashed: false
+    });
+    mockDriveClient.downloadFile.mockResolvedValue(new TextEncoder().encode('remote changes').buffer);
+    mockDriveClient.updateFileContent.mockResolvedValue(undefined);
+
+    // 2. Run single file sync
+    await syncManager.syncSingleFile(file as any, 'destId');
+
+    // 3. Assertions
+    // It should have merged local and remote changes inline
+    const expectedMerged = [
+      '<<<<<<< Local Changes',
+      'local changes',
+      '=======',
+      'remote changes',
+      '>>>>>>> Remote Changes'
+    ].join('\n');
+
+    expect(fileContents['conflict.md']).toBe(expectedMerged);
+    expect(mockDriveClient.updateFileContent).toHaveBeenCalledWith('driveId123', expectedMerged);
+
+    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] || '{}');
+    expect(savedState.files['conflict.md'].hash).toBe(CryptoJS.MD5(expectedMerged).toString());
+  });
+
+  it('should detect untracked conflict and resolve on single file incremental sync', async () => {
+    // 1. Setup local file (no state)
+    const file = { path: 'untracked_conflict.md', name: 'untracked_conflict.md', extension: 'md' };
+    mockFiles.push(file);
+    fileContents['untracked_conflict.md'] = 'local changes';
+
+    // Mock Google Drive client to return remote version
+    mockDriveClient.resolveFolderHierarchy.mockResolvedValue('destId');
+    mockDriveClient.findItem.mockResolvedValue({
+      id: 'driveId123',
+      name: 'untracked_conflict.md',
+      mimeType: 'text/markdown',
+      md5Checksum: CryptoJS.MD5('remote changes').toString()
+    });
+    mockDriveClient.downloadFile.mockResolvedValue(new TextEncoder().encode('remote changes').buffer);
+    mockDriveClient.updateFileContent.mockResolvedValue(undefined);
+
+    // 2. Run single file sync
+    await syncManager.syncSingleFile(file as any, 'destId');
+
+    // 3. Assertions
+    const expectedMerged = [
+      '<<<<<<< Local Changes',
+      'local changes',
+      '=======',
+      'remote changes',
+      '>>>>>>> Remote Changes'
+    ].join('\n');
+
+    expect(fileContents['untracked_conflict.md']).toBe(expectedMerged);
+    expect(mockDriveClient.updateFileContent).toHaveBeenCalledWith('driveId123', expectedMerged);
+  });
 });
