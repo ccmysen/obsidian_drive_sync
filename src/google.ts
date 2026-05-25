@@ -295,13 +295,30 @@ export class GoogleDriveClient {
     });
   }
 
-  // List files and folders directly under a parent folder
+  // List files and folders directly under a parent folder (handling pagination)
   public async listFilesInFolder(folderId: string): Promise<any[]> {
     const q = `'${folderId}' in parents and trashed = false`;
-    const res = await this.request({
-      url: `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name,mimeType,md5Checksum,parents)`,
-      method: 'GET',
-    });
-    return res.json.files || [];
+    const files: any[] = [];
+    let pageToken: string | undefined = undefined;
+
+    do {
+      let url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=nextPageToken,files(id,name,mimeType,md5Checksum,parents)&pageSize=1000`;
+      if (pageToken) {
+        url += `&pageToken=${encodeURIComponent(pageToken)}`;
+      }
+
+      const res = await this.request({
+        url,
+        method: 'GET',
+      });
+
+      const data = res.json;
+      if (data && data.files) {
+        files.push(...data.files);
+      }
+      pageToken = data ? data.nextPageToken : undefined;
+    } while (pageToken);
+
+    return files;
   }
 }
