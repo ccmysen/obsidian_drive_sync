@@ -1,4 +1,4 @@
-import { App, TFile, Notice, Plugin } from 'obsidian';
+import { App, TFile, TFolder, Notice, Plugin } from 'obsidian';
 import * as CryptoJS from 'crypto-js';
 import { GoogleDriveClient } from './google';
 import { DeleteConfirmationModal } from './ui/delete-modal';
@@ -764,6 +764,37 @@ export class SyncManager {
         console.error(`Fallback sync failed for renamed file ${file.path}:`, fallbackErr);
       }
     }
+  }
+
+  // Find and delete empty local folders in the Obsidian vault recursively
+  public async pruneEmptyLocalFolders(): Promise<number> {
+    let prunedCount = 0;
+    const allFiles = this.app.vault.getAllLoadedFiles();
+    const folders = allFiles.filter((file): file is TFolder => {
+      if (!(file instanceof TFolder)) return false;
+      if (file.path === '/' || file.path === '' || (typeof file.isRoot === 'function' && file.isRoot())) return false;
+      const pathParts = file.path.split('/');
+      return !pathParts.some(part => part.startsWith('.'));
+    });
+
+    // Sort folders by depth in descending order to handle nested empty directories first
+    folders.sort((a, b) => b.path.split('/').length - a.path.split('/').length);
+
+    for (const folder of folders) {
+      const liveFolder = this.app.vault.getAbstractFileByPath(folder.path);
+      if (liveFolder instanceof TFolder && liveFolder.children.length === 0) {
+        try {
+          await this.app.vault.delete(liveFolder);
+          prunedCount++;
+          if (DEBUG_LOGGING) {
+            console.log(`Pruned empty local folder: ${folder.path}`);
+          }
+        } catch (e) {
+          console.error(`Failed to delete empty local folder ${folder.path}:`, e);
+        }
+      }
+    }
+    return prunedCount;
   }
 
   // Run the full sync operation

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { TFile } from 'obsidian';
+import { TFile, TFolder } from 'obsidian';
 import { SyncManager } from '../sync';
 import { GoogleDriveClient } from '../google';
 import * as CryptoJS from 'crypto-js';
@@ -16,6 +16,13 @@ vi.mock('obsidian', () => {
       manifest = { id: 'obsidian_drive_sync' };
     },
     TFile: class {},
+    TFolder: class {
+      children: any[] = [];
+      path = '';
+      isRoot() {
+        return this.path === '/' || this.path === '';
+      }
+    },
     Modal: class {
       constructor(public app: any) {}
       open() {}
@@ -30,11 +37,13 @@ describe('SyncManager', () => {
   let mockDriveClient: any;
   let syncManager: SyncManager;
   let mockFiles: any[] = [];
+  let mockFolders: any[] = [];
   let fileContents: Record<string, string | ArrayBuffer> = {};
   let adapterFiles: Record<string, string> = {};
 
   beforeEach(() => {
     mockFiles = [];
+    mockFolders = [];
     fileContents = {};
     adapterFiles = {};
 
@@ -49,6 +58,33 @@ describe('SyncManager', () => {
         readBinary: async (file: any) => {
           return fileContents[file.path] as ArrayBuffer;
         },
+        getAllLoadedFiles: vi.fn().mockImplementation(() => {
+          const fileInstances = mockFiles.map(f => {
+            const fileInstance = new TFile();
+            Object.assign(fileInstance, f);
+            return fileInstance;
+          });
+          const folderInstances = mockFolders.map(d => {
+            const folderInstance = new TFolder();
+            Object.assign(folderInstance, d);
+            return folderInstance;
+          });
+          for (const folder of folderInstances) {
+            folder.children = [
+              ...fileInstances.filter(f => {
+                const parts = f.path.split('/');
+                parts.pop();
+                return parts.join('/') === folder.path;
+              }),
+              ...folderInstances.filter(f => {
+                const parts = f.path.split('/');
+                parts.pop();
+                return parts.join('/') === folder.path && f.path !== folder.path;
+              })
+            ];
+          }
+          return [...fileInstances, ...folderInstances];
+        }),
         getAbstractFileByPath: vi.fn().mockImplementation((path) => {
           const f = mockFiles.find(file => file.path === path);
           if (f) {
@@ -56,15 +92,47 @@ describe('SyncManager', () => {
             Object.assign(fileInstance, f);
             return fileInstance;
           }
+          const folderDef = mockFolders.find(fold => fold.path === path);
+          if (folderDef) {
+            const folderInstance = new TFolder();
+            Object.assign(folderInstance, folderDef);
+            const fileInstances = mockFiles.map(mf => {
+              const fileInstance = new TFile();
+              Object.assign(fileInstance, mf);
+              return fileInstance;
+            });
+            const folderInstances = mockFolders.map(md => {
+              const folderInstance = new TFolder();
+              Object.assign(folderInstance, md);
+              return folderInstance;
+            });
+            folderInstance.children = [
+              ...fileInstances.filter(fi => {
+                const parts = fi.path.split('/');
+                parts.pop();
+                return parts.join('/') === folderInstance.path;
+              }),
+              ...folderInstances.filter(fo => {
+                const parts = fo.path.split('/');
+                parts.pop();
+                return parts.join('/') === folderInstance.path && fo.path !== folderInstance.path;
+              })
+            ];
+            return folderInstance;
+          }
           return null;
         }),
-        delete: vi.fn().mockImplementation(async (file) => {
-          const idx = mockFiles.findIndex(f => f.path === file.path);
+        delete: vi.fn().mockImplementation(async (item) => {
+          const idx = mockFiles.findIndex(f => f.path === item.path);
           if (idx !== -1) {
             mockFiles.splice(idx, 1);
           }
-          delete fileContents[file.path];
-          delete adapterFiles[file.path];
+          const folderIdx = mockFolders.findIndex(f => f.path === item.path);
+          if (folderIdx !== -1) {
+            mockFolders.splice(folderIdx, 1);
+          }
+          delete fileContents[item.path];
+          delete adapterFiles[item.path];
         }),
         createFolder: vi.fn().mockResolvedValue(undefined),
         create: vi.fn().mockImplementation(async (path, content) => {
@@ -1235,5 +1303,37 @@ describe('SyncManager', () => {
     expect(mockDriveClient.updateFileContent).toHaveBeenCalledWith('driveFileId123', 'content v2');
 
     vi.useRealTimers();
+  });
+
+  it('should prune empty local folders recursively, ignoring root, dot-folders, and non-empty folders', async () => {
+    // 1. Setup mock folders
+    mockFolders.push(
+      { path: 'folderA', name: 'folderA' },
+      { path: 'folderA/folderB', name: 'folderB' },
+      { path: 'folderA/folderB/folderC', name: 'folderC' },
+      { path: 'folderD', name: 'folderD' },
+      { path: '.obsidian', name: '.obsidian' },
+      { path: '.obsidian/somefolder', name: 'somefolder' },
+      { path: '.git', name: '.git' }
+    );
+
+    mockFiles.push(
+      { path: 'folderD/file1.md', name: 'file1.md', extension: 'md' }
+    );
+
+    // 2. Call pruneEmptyLocalFolders
+    const prunedCount = await syncManager.pruneEmptyLocalFolders();
+
+    // 3. Assertions
+    expect(prunedCount).toBe(3);
+
+    const paths = mockFolders.map(f => f.path);
+    expect(paths).toContain('folderD');
+    expect(paths).toContain('.obsidian');
+    expect(paths).toContain('.obsidian/somefolder');
+    expect(paths).toContain('.git');
+    expect(paths).not.toContain('folderA');
+    expect(paths).not.toContain('folderA/folderB');
+    expect(paths).not.toContain('folderA/folderB/folderC');
   });
 });

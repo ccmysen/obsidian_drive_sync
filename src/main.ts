@@ -67,6 +67,34 @@ export default class LoggingPlugin extends Plugin {
       })
     );
 
+    this.registerEvent(
+      this.app.workspace.on('editor-menu', (menu, editor, view) => {
+        menu.addItem((item) => {
+          item
+            .setTitle('Force Google Drive sync')
+            .setIcon('cloud-sync')
+            .onClick(async () => {
+              if (this.settings.accessToken && this.settings.refreshToken) {
+                const folderId = this.settings.destinationFolderId || this.settings.destinationFolderName;
+                await this.syncManager.runSync(folderId);
+              } else {
+                new Notice('Google Drive sync: Please authenticate in settings first.');
+              }
+            });
+        });
+
+        menu.addItem((item) => {
+          item
+            .setTitle('Prune empty local folders')
+            .setIcon('folder-x')
+            .onClick(async () => {
+              const prunedCount = await this.syncManager.pruneEmptyLocalFolders();
+              new Notice(`Pruned ${prunedCount} empty local folder(s).`);
+            });
+        });
+      })
+    );
+
     this.addSettingTab(new SampleSettingTab(this.app, this));
 
     // Trigger sync asynchronously after loading so it doesn't block startup
