@@ -91,6 +91,17 @@ export class SyncManager {
     }
   }
 
+  // Construct a hidden conflict path starting with "." for the filename
+  private getConflictPath(filePath: string): string {
+    const ext = filePath.split('.').pop() || '';
+    const pathParts = filePath.split('/');
+    const fileNameWithExt = pathParts.pop() || '';
+    const parentDir = pathParts.join('/');
+    const nameWithoutExt = fileNameWithExt.slice(0, -(ext.length + 1));
+    const conflictFileName = `.${nameWithoutExt}.sync-conflict.${ext}`;
+    return parentDir ? `${parentDir}/${conflictFileName}` : conflictFileName;
+  }
+
   // Determine if a file path is considered a binary file
   private isBinaryFile(path: string): boolean {
     const ext = path.split('.').pop()?.toLowerCase() || '';
@@ -413,9 +424,7 @@ export class SyncManager {
               };
               await this.saveState();
             } else {
-              const ext = file.path.split('.').pop() || '';
-              const baseName = file.path.slice(0, -(ext.length + 1));
-              const conflictPath = `${baseName}.sync-conflict.${ext}`;
+              const conflictPath = this.getConflictPath(file.path);
               
               await this.ensureLocalDirectory(parentParts.join('/'));
               await this.app.vault.rename(file, conflictPath);
@@ -463,9 +472,7 @@ export class SyncManager {
               };
               await this.saveState();
             } else {
-              const ext = file.path.split('.').pop() || '';
-              const baseName = file.path.slice(0, -(ext.length + 1));
-              const conflictPath = `${baseName}.sync-conflict.${ext}`;
+              const conflictPath = this.getConflictPath(file.path);
               
               await this.ensureLocalDirectory(parentParts.join('/'));
               await this.app.vault.rename(file, conflictPath);
@@ -981,9 +988,7 @@ export class SyncManager {
                 entry.lastSyncTime = Date.now();
                 await this.saveState();
               } else {
-                const ext = path.split('.').pop() || '';
-                const baseName = path.slice(0, -(ext.length + 1));
-                const conflictPath = `${baseName}.sync-conflict.${ext}`;
+                const conflictPath = this.getConflictPath(path);
                 
                 await this.ensureLocalDirectory(pathParts.slice(0, -1).join('/'));
                 await this.app.vault.rename(localFile as TFile, conflictPath);
@@ -1041,9 +1046,7 @@ export class SyncManager {
               };
               await this.saveState();
             } else {
-              const ext = path.split('.').pop() || '';
-              const baseName = path.slice(0, -(ext.length + 1));
-              const conflictPath = `${baseName}.sync-conflict.${ext}`;
+              const conflictPath = this.getConflictPath(path);
               
               await this.ensureLocalDirectory(pathParts.slice(0, -1).join('/'));
               await this.app.vault.rename(localFile as TFile, conflictPath);

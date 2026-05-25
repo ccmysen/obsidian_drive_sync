@@ -1115,4 +1115,57 @@ describe('SyncManager', () => {
     expect(fileContents['untracked_conflict.md']).toBe(expectedMerged);
     expect(mockDriveClient.updateFileContent).toHaveBeenCalledWith('driveId123', expectedMerged);
   });
+
+  it('should rename local binary file to a hidden path starting with a dot on conflict', async () => {
+    // 1. Setup local binary file and state
+    const file = { path: 'FolderA/image.png', name: 'image.png', extension: 'png' };
+    mockFiles.push(file);
+    const localContent = new Uint8Array([1, 2, 3]).buffer;
+    fileContents['FolderA/image.png'] = localContent;
+
+    const existingState = {
+      files: {
+        'FolderA/image.png': {
+          hash: CryptoJS.MD5('original content').toString(),
+          driveFileId: 'driveId123',
+          lastSyncTime: Date.now(),
+          deleted: false,
+        },
+      },
+    };
+    adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] = JSON.stringify(existingState);
+
+    // Setup listFilesInFolder to return remote modified version
+    mockDriveClient.listFilesInFolder = vi.fn().mockImplementation(async (folderId) => {
+      if (folderId === 'destId') {
+        return [
+          { id: 'folderA_Id', name: 'FolderA', mimeType: 'application/vnd.google-apps.folder' }
+        ];
+      }
+      if (folderId === 'folderA_Id') {
+        return [
+          { id: 'driveId123', name: 'image.png', mimeType: 'image/png', md5Checksum: CryptoJS.MD5('remote binary content').toString() }
+        ];
+      }
+      return [];
+    });
+
+    const remoteContent = new Uint8Array([4, 5, 6]).buffer;
+    mockDriveClient.downloadFile = vi.fn().mockResolvedValue(remoteContent);
+
+    // 2. Run sync
+    await syncManager.runSync('destId');
+
+    // 3. Assertions
+    // The conflict path must start with a dot for the filename segment: FolderA/.image.sync-conflict.png
+    const expectedConflictPath = 'FolderA/.image.sync-conflict.png';
+    expect(mockApp.vault.rename).toHaveBeenCalledWith(expect.anything(), expectedConflictPath);
+    expect(fileContents[expectedConflictPath]).toBe(localContent);
+    expect(fileContents['FolderA/image.png']).toBe(remoteContent);
+
+    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] || '{}');
+    expect(savedState.files[expectedConflictPath]).toBeDefined();
+    expect(savedState.files[expectedConflictPath].driveFileId).toBe('');
+    expect(savedState.files['FolderA/image.png'].driveFileId).toBe('driveId123');
+  });
 });
