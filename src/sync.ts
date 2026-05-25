@@ -308,21 +308,106 @@ export class SyncManager {
       this.debounceTimers.delete(oldPath);
     }
 
+    await this.loadState();
+    const oldEntry = this.state.files[oldPath];
+
     if (DEBUG_LOGGING) {
       console.info(`Incremental sync: file renamed/moved from ${oldPath} to ${file.path}`);
     }
-    
-    // Mark old path as deleted in state
-    await this.handleLocalDeletion(oldPath);
 
-    // Trigger immediate sync for the new path
+    // If there is no cached Drive ID for the old path, just sync the new file as a fresh create
+    if (!oldEntry || !oldEntry.driveFileId) {
+      // Mark old path as deleted in state just in case
+      await this.handleLocalDeletion(oldPath);
+      try {
+        const resolvedFolderId = await this.resolveDestinationFolderId(destinationFolderId);
+        if (resolvedFolderId) {
+          await this.syncSingleFile(file, resolvedFolderId);
+        }
+      } catch (err) {
+        console.error(`Incremental sync failed for renamed file ${file.path}:`, err);
+      }
+      return;
+    }
+
+    const driveFileId = oldEntry.driveFileId;
+
     try {
       const resolvedFolderId = await this.resolveDestinationFolderId(destinationFolderId);
-      if (resolvedFolderId) {
-        await this.syncSingleFile(file, resolvedFolderId);
+      if (!resolvedFolderId) {
+        throw new Error("Could not resolve destination folder ID");
       }
+
+      // 1. Resolve new parent folder hierarchy on Drive
+      const pathParts = file.path.split('/');
+      const fileName = pathParts.pop() || file.name;
+      const newParentFolderId = await this.driveClient.resolveFolderHierarchy(pathParts, resolvedFolderId);
+
+      // 2. Fetch current parents of the file on Drive
+      const parents = await this.driveClient.getFileParents(driveFileId);
+
+      if (parents.length > 0) {
+        const oldParentId = parents[0];
+        if (oldParentId) {
+          if (oldParentId !== newParentFolderId) {
+            // Reparent and rename (if name changed too) in one request
+            if (DEBUG_LOGGING) {
+              console.log(`Reparenting and renaming file ${driveFileId} from parent ${oldParentId} to ${newParentFolderId} with name "${fileName}"`);
+            }
+            await this.driveClient.moveFile(driveFileId, oldParentId, newParentFolderId, fileName);
+          } else {
+            // Same parent folder, check if filename changed
+            const oldPathParts = oldPath.split('/');
+            const oldFileName = oldPathParts.pop() || '';
+            if (oldFileName && oldFileName !== fileName) {
+              if (DEBUG_LOGGING) {
+                console.log(`Renaming file ${driveFileId} from "${oldFileName}" to "${fileName}" under same parent`);
+              }
+              await this.driveClient.renameItem(driveFileId, fileName);
+            }
+          }
+        }
+      } else {
+        // Fallback: If parents length is 0 (file might have been orphaned or deleted on Drive),
+        // we'll try to find it on Drive or create it.
+        if (DEBUG_LOGGING) {
+          console.warn(`No parents found on Drive for file ID ${driveFileId}. Re-syncing as a new upload.`);
+        }
+        await this.syncSingleFile(file, resolvedFolderId);
+        return;
+      }
+
+      // 3. Sync file contents if they have changed
+      const { hash, content } = await this.getFileHash(file);
+      if (oldEntry.hash !== hash) {
+        if (DEBUG_LOGGING) {
+          console.log(`Contents of moved/renamed file ${file.path} changed. Updating content on Google Drive.`);
+        }
+        await this.driveClient.updateFileContent(driveFileId, content);
+      }
+
+      // 4. Update sync state: remove old path, add new path
+      delete this.state.files[oldPath];
+      this.state.files[file.path] = {
+        hash: hash,
+        driveFileId: driveFileId,
+        lastSyncTime: Date.now(),
+        deleted: false,
+      };
+      await this.saveState();
+
     } catch (err) {
-      console.error(`Incremental sync failed for renamed file ${file.path}:`, err);
+      console.error(`Failed to move/rename file ${oldPath} to ${file.path} on Google Drive:`, err);
+      // Fallback: mark old as deleted, sync new as fresh
+      await this.handleLocalDeletion(oldPath);
+      try {
+        const resolvedFolderId = await this.resolveDestinationFolderId(destinationFolderId);
+        if (resolvedFolderId) {
+          await this.syncSingleFile(file, resolvedFolderId);
+        }
+      } catch (fallbackErr) {
+        console.error(`Fallback sync failed for renamed file ${file.path}:`, fallbackErr);
+      }
     }
   }
 

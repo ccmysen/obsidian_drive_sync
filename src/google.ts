@@ -227,4 +227,34 @@ export class GoogleDriveClient {
       body: content,
     });
   }
+
+  // Get current parents of a file
+  public async getFileParents(fileId: string): Promise<string[]> {
+    try {
+      const res = await this.request({
+        url: `https://www.googleapis.com/drive/v3/files/${fileId}?fields=parents`,
+        method: 'GET',
+      });
+      return res.json.parents || [];
+    } catch (e) {
+      if (DEBUG_LOGGING) {
+        console.error(`Failed to get parents for file ${fileId}:`, e);
+      }
+      return [];
+    }
+  }
+
+  // Reparent and optionally rename a file in a single PATCH request
+  public async moveFile(fileId: string, oldParentId: string, newParentId: string, newName: string): Promise<void> {
+    await this.request({
+      url: `https://www.googleapis.com/drive/v3/files/${fileId}?addParents=${newParentId}&removeParents=${oldParentId}`,
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: newName,
+      }),
+    });
+  }
 }

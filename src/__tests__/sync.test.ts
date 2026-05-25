@@ -82,6 +82,8 @@ describe('SyncManager', () => {
         return { id: id, name: 'MyFolder', mimeType: 'application/vnd.google-apps.folder', trashed: false };
       }),
       renameItem: vi.fn().mockResolvedValue(undefined),
+      getFileParents: vi.fn().mockResolvedValue([]),
+      moveFile: vi.fn().mockResolvedValue(undefined),
       findItem: vi.fn(),
       createFolder: vi.fn(),
       resolveFolderHierarchy: vi.fn(),
@@ -453,7 +455,7 @@ describe('SyncManager', () => {
     vi.useRealTimers();
   });
 
-  it('should handle local rename by deleting old path and syncing new path', async () => {
+  it('should fallback to clean upload on rename if old file has no cached driveFileId', async () => {
     const file = {
       path: 'new.md',
       name: 'new.md',
@@ -462,17 +464,8 @@ describe('SyncManager', () => {
     mockFiles.push(file);
     fileContents['new.md'] = 'new content';
 
-    // Add old file to state
-    const existingState = {
-      files: {
-        'old.md': {
-          hash: 'hash123',
-          driveFileId: 'driveId123',
-          lastSyncTime: Date.now(),
-          deleted: false,
-        },
-      },
-    };
+    // Empty state (no old.md)
+    const existingState = { files: {} };
     adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] = JSON.stringify(existingState);
 
     mockDriveClient.resolveFolderHierarchy.mockResolvedValue('destId');
@@ -481,15 +474,57 @@ describe('SyncManager', () => {
 
     await syncManager.handleLocalRename('old.md', file as any, 'destId');
 
-    // Check old file state is deleted
-    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] || '{}');
-    expect(savedState.files['old.md'].deleted).toBe(true);
-
     // Check new file was immediately synced
     expect(mockDriveClient.createFile).toHaveBeenCalledWith('new.md', 'destId', 'new content');
-    // Verify new file exists in state with correct fields
     const savedStatePost = JSON.parse(adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] || '{}');
     expect(savedStatePost.files['new.md']).toBeDefined();
     expect(savedStatePost.files['new.md'].driveFileId).toBe('newFileId');
+  });
+
+  it('should reparent and update file on rename if old file exists in state', async () => {
+    const file = {
+      path: 'FolderB/test.md',
+      name: 'test.md',
+      extension: 'md',
+    };
+    mockFiles.push(file);
+    fileContents['FolderB/test.md'] = 'new content';
+
+    // Add old file to state
+    const existingState = {
+      files: {
+        'FolderA/test.md': {
+          hash: 'oldHash',
+          driveFileId: 'driveId123',
+          lastSyncTime: Date.now(),
+          deleted: false,
+        },
+      },
+    };
+    adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] = JSON.stringify(existingState);
+
+    // Mock parent folder resolution
+    mockDriveClient.resolveFolderHierarchy.mockResolvedValue('FolderB_Id');
+    
+    // Mock getFileParents to return the old parent folder ID
+    mockDriveClient.getFileParents = vi.fn().mockResolvedValue(['FolderA_Id']);
+    
+    // Mock moveFile and updateFileContent
+    mockDriveClient.moveFile = vi.fn().mockResolvedValue(undefined);
+    mockDriveClient.updateFileContent = vi.fn().mockResolvedValue(undefined);
+
+    await syncManager.handleLocalRename('FolderA/test.md', file as any, 'destId');
+
+    // 1. Verify file was moved/reparented
+    expect(mockDriveClient.moveFile).toHaveBeenCalledWith('driveId123', 'FolderA_Id', 'FolderB_Id', 'test.md');
+
+    // 2. Verify file content was updated (since content changed from 'oldHash' to 'new content')
+    expect(mockDriveClient.updateFileContent).toHaveBeenCalledWith('driveId123', 'new content');
+
+    // 3. Verify state was updated (old path removed, new path added)
+    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] || '{}');
+    expect(savedState.files['FolderA/test.md']).toBeUndefined();
+    expect(savedState.files['FolderB/test.md']).toBeDefined();
+    expect(savedState.files['FolderB/test.md'].driveFileId).toBe('driveId123');
   });
 });
