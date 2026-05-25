@@ -79,12 +79,37 @@ export default {
     <div class="card">
         <h1>Authentication Successful</h1>
         <p>Your Google Drive credentials have been verified. Your browser should prompt you to open Obsidian. If not, click the button below.</p>
-        <a href="${escapeHtml(destinationUrl)}" class="btn">Open Obsidian</a>
+        <a href="${escapeHtml(destinationUrl)}" class="btn" onclick="setTimeout(attemptClose, 500)">Open Obsidian</a>
         <p class="hint">You can safely close this window once the redirect completes.</p>
     </div>
     <script>
+        const destination = "${destinationUrl.replace(/"/g, '\\"')}";
+
+        // Function to attempt closing the window/tab
+        function attemptClose() {
+            try {
+                window.close();
+            } catch (e) {
+                console.error("Standard close failed:", e);
+            }
+            try {
+                window.open('', '_self', '');
+                window.close();
+            } catch (e) {
+                console.error("Self-open close trick failed:", e);
+            }
+        }
+
         // Automatically attempt to redirect to Obsidian
-        window.location.href = "${destinationUrl.replace(/"/g, '\\"')}";
+        window.location.href = destination;
+
+        // Try to close after 1.5 seconds to give the browser time to trigger the protocol handler
+        setTimeout(attemptClose, 1500);
+
+        // Also close when the window loses focus (e.g. browser opens external app prompt)
+        window.addEventListener("blur", () => {
+            setTimeout(attemptClose, 500);
+        });
     </script>
 </body>
 </html>`;

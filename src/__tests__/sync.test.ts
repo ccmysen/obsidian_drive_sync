@@ -1358,4 +1358,58 @@ describe('SyncManager', () => {
     expect(paths).not.toContain('folderA');
     expect(paths).not.toContain('folderA/folderB');
   });
+
+  it('should sync new remote files only under the specified subPath', async () => {
+    // 1. Setup mocks
+    mockDriveClient.resolveFolderHierarchy.mockImplementation(async (pathParts: string[], rootFolderId: string) => {
+      if (pathParts.join('/') === 'scopedFolder') {
+        return 'scopedFolderId123';
+      }
+      return 'destId';
+    });
+
+    mockDriveClient.listFilesInFolder = vi.fn().mockImplementation(async (folderId) => {
+      if (folderId === 'destId') {
+        return [
+          { id: 'scopedFolderId123', name: 'scopedFolder', mimeType: 'application/vnd.google-apps.folder' },
+          { id: 'otherFolderId123', name: 'otherFolder', mimeType: 'application/vnd.google-apps.folder' }
+        ];
+      }
+      if (folderId === 'scopedFolderId123') {
+        return [
+          { id: 'remoteFileId123', name: 'remote_new.md', mimeType: 'text/markdown', md5Checksum: CryptoJS.MD5('new remote content').toString() }
+        ];
+      }
+      if (folderId === 'otherFolderId123') {
+        return [
+          { id: 'remoteFileId456', name: 'remote_ignored.md', mimeType: 'text/markdown', md5Checksum: CryptoJS.MD5('ignored remote content').toString() }
+        ];
+      }
+      return [];
+    });
+
+    mockDriveClient.downloadFile = vi.fn().mockImplementation(async (fileId) => {
+      if (fileId === 'remoteFileId123') {
+        return new TextEncoder().encode('new remote content').buffer;
+      }
+      if (fileId === 'remoteFileId456') {
+        return new TextEncoder().encode('ignored remote content').buffer;
+      }
+      return new Uint8Array().buffer;
+    });
+
+    // 2. Call runSync with subPath = 'scopedFolder'
+    await syncManager.runSync('destId', 'scopedFolder');
+
+    // 3. Assertions
+    // scopedFolder/remote_new.md should be downloaded
+    expect(fileContents['scopedFolder/remote_new.md']).toBe('new remote content');
+    // otherFolder/remote_ignored.md should not be downloaded
+    expect(fileContents['otherFolder/remote_ignored.md']).toBeUndefined();
+
+    const savedState = JSON.parse(adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] || '{}');
+    expect(savedState.files['scopedFolder/remote_new.md']).toBeDefined();
+    expect(savedState.files['scopedFolder/remote_new.md'].driveFileId).toBe('remoteFileId123');
+    expect(savedState.files['otherFolder/remote_ignored.md']).toBeUndefined();
+  });
 });

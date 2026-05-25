@@ -119,16 +119,7 @@ export default class ObsidianDriveSync extends Plugin {
                   await this.syncManager.syncSingleFile(file, resolvedFolderId);
                   new Notice(`Syncing complete for: ${file.name}`);
                 } else if (file instanceof TFolder) {
-                  new Notice(`Syncing folder: ${file.name}`);
-                  const filesToSync = this.app.vault.getFiles().filter(f => f.path.startsWith(file.path + '/'));
-                  let syncedCount = 0;
-                  for (const f of filesToSync) {
-                    const pathParts = f.path.split('/');
-                    if (pathParts.some(part => part.startsWith('.'))) continue;
-                    await this.syncManager.syncSingleFile(f, resolvedFolderId);
-                    syncedCount++;
-                  }
-                  new Notice(`Syncing complete for folder: ${file.name} (${syncedCount} files)`);
+                  await this.syncManager.runSync(folderId, file.path);
                 }
               } else {
                 new Notice('Google Drive sync: Please authenticate in settings first.');

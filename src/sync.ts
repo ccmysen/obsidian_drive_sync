@@ -45,9 +45,9 @@ export class SyncManager {
   }
 
   // Recursively fetch all remote files under a root folder ID, computing paths relative to root
-  private async getAllRemoteFiles(rootFolderId: string): Promise<Map<string, any>> {
+  private async getAllRemoteFiles(rootFolderId: string, pathPrefix = ''): Promise<Map<string, any>> {
     const remoteFiles = new Map<string, any>();
-    const queue = [{ id: rootFolderId, path: '' }];
+    const queue = [{ id: rootFolderId, path: pathPrefix }];
     
     while (queue.length > 0) {
       const current = queue.shift();
@@ -799,7 +799,8 @@ export class SyncManager {
   }
 
   // Run the full sync operation
-  public async runSync(destinationFolderId: string): Promise<void> {
+  // Run the full sync operation (optionally scoped to a subPath folder)
+  public async runSync(destinationFolderId: string, subPath?: string): Promise<void> {
     const pluginAny = this.plugin as any;
     if (pluginAny) {
       pluginAny.lastSyncTime = Date.now();
@@ -824,18 +825,28 @@ export class SyncManager {
 
     new Notice("Google Drive sync started...");
     if (DEBUG_LOGGING) {
-      console.log("Starting Google Drive sync...");
+      console.log(subPath ? `Starting Google Drive sync for folder: ${subPath}...` : "Starting Google Drive sync...");
     }
 
-    // 1. Get all local files (excluding hidden files/folders)
+    // 1. Get all local files (excluding hidden files/folders and filtered by subPath if provided)
     const localFiles = this.app.vault.getFiles().filter(file => {
       const pathParts = file.path.split('/');
-      return !pathParts.some(part => part.startsWith('.'));
+      if (pathParts.some(part => part.startsWith('.'))) return false;
+      if (subPath && file.path !== subPath && !file.path.startsWith(subPath + '/')) return false;
+      return true;
     });
     const localFilePaths = new Set(localFiles.map(f => f.path));
 
-    // 2. Fetch all remote files recursively from Google Drive
-    const remoteFiles = await this.getAllRemoteFiles(resolvedFolderId);
+    // 2. Fetch all remote files recursively from Google Drive (optionally scoped to the subPath folder)
+    let remoteFiles = new Map<string, any>();
+    if (subPath) {
+      const pathParts = subPath.split('/').filter(Boolean);
+      const subFolderId = await this.driveClient.resolveFolderHierarchy(pathParts, resolvedFolderId);
+      remoteFiles = await this.getAllRemoteFiles(subFolderId, subPath);
+    } else {
+      remoteFiles = await this.getAllRemoteFiles(resolvedFolderId);
+    }
+
     const remoteFilesByPath = new Map<string, any>();
     for (const [id, item] of remoteFiles.entries()) {
       remoteFilesByPath.set(item.computedPath, item);
@@ -845,6 +856,7 @@ export class SyncManager {
 
     // 3. Resolve remote moves/renames (on Drive) first
     for (const [path, entry] of Object.entries(this.state.files)) {
+      if (subPath && path !== subPath && !path.startsWith(subPath + '/')) continue;
       if (!entry.deleted && entry.driveFileId) {
         const rFile = remoteFiles.get(entry.driveFileId);
         if (rFile && rFile.computedPath !== path) {
@@ -891,6 +903,7 @@ export class SyncManager {
     // 4. Resolve local moves/renames (heuristic matching)
     const missingLocally = new Map<string, { path: string, entry: SyncEntry }[]>();
     for (const [path, entry] of Object.entries(this.state.files)) {
+      if (subPath && path !== subPath && !path.startsWith(subPath + '/')) continue;
       if (!entry.deleted && !localFilePaths.has(path)) {
         const filename = path.split('/').pop() || '';
         if (filename) {
@@ -977,7 +990,7 @@ export class SyncManager {
     // 5. Run the unified 2-way sync loop
     const allPaths = new Set<string>([
       ...localFiles.map(f => f.path),
-      ...Object.keys(this.state.files),
+      ...Object.keys(this.state.files).filter(path => !subPath || path === subPath || path.startsWith(subPath + '/')),
       ...Array.from(remoteFiles.values()).map(r => r.computedPath)
     ]);
 
@@ -1234,7 +1247,9 @@ export class SyncManager {
       });
     }
 
-    const summary = `Sync complete! Uploaded: ${uploadCount}, Downloaded: ${downloadCount}, Conflicts merged: ${conflictCount}, Unchanged: ${skipCount}, Deletions processed: ${deleteCount}, Failed: ${failCount}`;
+    const summary = subPath 
+      ? `Sync complete for folder '${subPath}'! Uploaded: ${uploadCount}, Downloaded: ${downloadCount}, Conflicts merged: ${conflictCount}, Unchanged: ${skipCount}, Deletions processed: ${deleteCount}, Failed: ${failCount}`
+      : `Sync complete! Uploaded: ${uploadCount}, Downloaded: ${downloadCount}, Conflicts merged: ${conflictCount}, Unchanged: ${skipCount}, Deletions processed: ${deleteCount}, Failed: ${failCount}`;
     if (DEBUG_LOGGING) {
       console.log(summary);
     }
