@@ -72,7 +72,8 @@ export default class LoggingPlugin extends Plugin {
         menu.addItem((item) => {
           item
             .setTitle('Force Google Drive sync')
-            .setIcon('cloud-sync')
+            //.setIcon('cloud-sync')
+            .setIcon('document')
             .onClick(async () => {
               if (this.settings.accessToken && this.settings.refreshToken) {
                 const folderId = this.settings.destinationFolderId || this.settings.destinationFolderName;
@@ -86,7 +87,8 @@ export default class LoggingPlugin extends Plugin {
         menu.addItem((item) => {
           item
             .setTitle('Prune empty local folders')
-            .setIcon('folder-x')
+            .setIcon('document')
+            //.setIcon('folder-x')
             .onClick(async () => {
               const prunedCount = await this.syncManager.pruneEmptyLocalFolders();
               new Notice(`Pruned ${prunedCount} empty local folder(s).`);
