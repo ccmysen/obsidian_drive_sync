@@ -768,6 +768,80 @@ describe('SyncManager', () => {
     expect(savedState.files['remote-deleted.md'].deleted).toBe(true);
   });
 
+  it('should save LF-normalized hash in state when downloading a CRLF file, and correctly delete it on subsequent remote deletion', async () => {
+    // 1. Setup file on Drive with CRLF content
+    const file = {
+      path: 'crlf-test.md',
+      name: 'crlf-test.md',
+      extension: 'md',
+    };
+    const crlfContent = 'line1\r\nline2';
+    const lfContent = 'line1\nline2';
+
+    // Mock Drive file list and download
+    mockDriveClient.listFilesInFolder.mockResolvedValueOnce([
+      { id: 'driveId789', name: 'crlf-test.md', mimeType: 'text/markdown', md5Checksum: CryptoJS.MD5(crlfContent).toString() }
+    ]);
+    mockDriveClient.downloadFile.mockResolvedValueOnce(new TextEncoder().encode(crlfContent).buffer);
+
+    // Mock vault functions
+    const localFileInstance = new TFile();
+    (localFileInstance as any).path = 'crlf-test.md';
+    (localFileInstance as any).extension = 'md';
+    
+    // First, file does not exist locally (so it gets downloaded)
+    mockApp.vault.getAbstractFileByPath = vi.fn().mockImplementation((path) => {
+      if (path === 'crlf-test.md') return null;
+      return null;
+    });
+    mockApp.vault.create = vi.fn().mockResolvedValue(localFileInstance);
+
+    // Run first sync to download it
+    await syncManager.runSync('destId');
+
+    // Verify it was downloaded and the hash saved in state is the LF hash
+    let savedState = JSON.parse(adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] || '{}');
+    const lfHash = CryptoJS.MD5(lfContent).toString();
+    expect(savedState.files['crlf-test.md'].hash).toBe(lfHash);
+
+    // 2. Now setup second sync where file is deleted on Drive
+    mockDriveClient.listFilesInFolder.mockResolvedValueOnce([]); // Empty means deleted
+    mockDriveClient.getFileMetadata.mockResolvedValueOnce(null);
+
+    // Now file exists locally
+    mockApp.vault.getAbstractFileByPath = vi.fn().mockReturnValue(localFileInstance);
+    mockApp.vault.read = vi.fn().mockResolvedValue(lfContent); // Local reads it as LF
+    mockApp.vault.delete = vi.fn().mockResolvedValue(undefined);
+
+    // Run second sync
+    await syncManager.runSync('destId');
+
+    // Verify it gets deleted locally
+    expect(mockApp.vault.delete).toHaveBeenCalledWith(localFileInstance);
+    savedState = JSON.parse(adapterFiles['.obsidian/plugins/obsidian_drive_sync/sync_state.json'] || '{}');
+    expect(savedState.files['crlf-test.md'].deleted).toBe(true);
+  });
+
+  it('should use adapter.write instead of vault.create in writeLocalFile if file exists on disk but vault cache returns null', async () => {
+    // 1. Setup mock disk file
+    const path = 'existing-on-disk.md';
+    adapterFiles[path] = 'some old disk content';
+
+    // Mock getAbstractFileByPath to return null (desynced cache)
+    mockApp.vault.getAbstractFileByPath = vi.fn().mockReturnValue(null);
+    mockApp.vault.create = vi.fn();
+    mockApp.vault.adapter.exists = vi.fn().mockResolvedValue(true);
+    mockApp.vault.adapter.write = vi.fn().mockResolvedValue(undefined);
+
+    // 2. Call writeLocalFile (private method, call via any)
+    const arrayBuffer = new TextEncoder().encode('new content').buffer;
+    await (syncManager as any).writeLocalFile(path, arrayBuffer, false);
+
+    // 3. Assertions
+    expect(mockApp.vault.create).not.toHaveBeenCalled();
+    expect(mockApp.vault.adapter.write).toHaveBeenCalledWith(path, 'new content');
+  });
+
   it('should prompt user on local deletion and clear driveFileId if skipped', async () => {
     // 1. Setup sync state with a file that exists on Drive but is missing locally
     const existingState = {

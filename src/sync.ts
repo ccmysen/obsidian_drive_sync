@@ -152,11 +152,22 @@ export class SyncManager {
         await this.app.vault.modify(file, text);
       }
     } else {
-      if (isBinary) {
-        await this.app.vault.createBinary(path, arrayBuffer);
+      // Check if it exists on disk to prevent "file already exists" errors
+      const diskExists = await this.app.vault.adapter.exists(path);
+      if (diskExists) {
+        if (isBinary) {
+          await this.app.vault.adapter.writeBinary(path, arrayBuffer);
+        } else {
+          const text = new TextDecoder().decode(arrayBuffer);
+          await this.app.vault.adapter.write(path, text);
+        }
       } else {
-        const text = new TextDecoder().decode(arrayBuffer);
-        await this.app.vault.create(path, text);
+        if (isBinary) {
+          await this.app.vault.createBinary(path, arrayBuffer);
+        } else {
+          const text = new TextDecoder().decode(arrayBuffer);
+          await this.app.vault.create(path, text);
+        }
       }
     }
   }
@@ -208,7 +219,8 @@ export class SyncManager {
       return CryptoJS.MD5(wordArray).toString();
     } else {
       const text = typeof content === 'string' ? content : new TextDecoder().decode(content);
-      return CryptoJS.MD5(text).toString();
+      const normalizedText = text.replace(/\r\n/g, '\n');
+      return CryptoJS.MD5(normalizedText).toString();
     }
   }
 
@@ -266,8 +278,9 @@ export class SyncManager {
       return { hash, isBinary, content: buffer };
     } else {
       const text = await this.app.vault.read(file);
-      const hash = CryptoJS.MD5(text).toString();
-      return { hash, isBinary, content: text };
+      const normalizedText = text.replace(/\r\n/g, '\n');
+      const hash = CryptoJS.MD5(normalizedText).toString();
+      return { hash, isBinary, content: normalizedText };
     }
   }
 
@@ -1049,7 +1062,7 @@ export class SyncManager {
               const buffer = await this.driveClient.downloadFile(remoteFile.id);
               await this.writeLocalFile(path, buffer, isBinary);
               
-              entry.hash = remoteHash;
+              entry.hash = this.getHashFromContent(buffer, isBinary);
               entry.lastSyncTime = Date.now();
               await this.saveState();
               downloadCount++;
@@ -1208,7 +1221,7 @@ export class SyncManager {
               const buffer = await this.driveClient.downloadFile(remoteFile.id);
               await this.writeLocalFile(path, buffer, isBinary);
               
-              entry.hash = remoteHash;
+              entry.hash = this.getHashFromContent(buffer, isBinary);
               entry.lastSyncTime = Date.now();
               await this.saveState();
               downloadCount++;
