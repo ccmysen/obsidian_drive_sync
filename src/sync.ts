@@ -131,8 +131,8 @@ export class SyncManager {
   // Determine if a file path is considered a binary file
   private isBinaryFile(path: string): boolean {
     const ext = path.split('.').pop()?.toLowerCase() || '';
-    const binaryExtensions = ['png', 'jpg', 'jpeg', 'gif', 'pdf', 'zip', 'mp3', 'mp4', 'mov', 'webp', 'svg'];
-    return binaryExtensions.includes(ext);
+    const textExtensions = ['md', 'txt', 'canvas', 'json', 'css', 'js', 'ts'];
+    return !textExtensions.includes(ext);
   }
 
   // Write content to a local file (ensuring directories exist and handling binary vs text)
@@ -268,8 +268,7 @@ export class SyncManager {
 
   // Helper to compute MD5 hash of TFile
   private async getFileHash(file: TFile): Promise<{ hash: string; isBinary: boolean; content: string | ArrayBuffer }> {
-    const binaryExtensions = ['png', 'jpg', 'jpeg', 'gif', 'pdf', 'zip', 'mp3', 'mp4', 'mov', 'webp', 'svg'];
-    const isBinary = binaryExtensions.includes(file.extension.toLowerCase());
+    const isBinary = this.isBinaryFile(file.path);
 
     if (isBinary) {
       const buffer = await this.app.vault.readBinary(file);
