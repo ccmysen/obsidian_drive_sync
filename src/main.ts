@@ -11,6 +11,7 @@ export default class ObsidianDriveSync extends Plugin {
   settings: ObsidianDriveSyncSettings;
   driveClient: GoogleDriveClient;
   syncManager: SyncManager;
+  settingTab: ObsidianDriveSyncSettingTab;
   public lastSyncTime = Date.now();
 
   async onload() {
@@ -146,7 +147,8 @@ export default class ObsidianDriveSync extends Plugin {
       })
     );
 
-    this.addSettingTab(new ObsidianDriveSyncSettingTab(this.app, this));
+    this.settingTab = new ObsidianDriveSyncSettingTab(this.app, this);
+    this.addSettingTab(this.settingTab);
 
     // Trigger sync asynchronously after loading so it doesn't block startup
     if (this.settings.accessToken && this.settings.refreshToken) {
@@ -210,6 +212,10 @@ export default class ObsidianDriveSync extends Plugin {
       new Notice('Google Drive authentication successful!');
       if (DEBUG_LOGGING) {
         console.debug('Token retrieved and saved via worker');
+      }
+
+      if (this.settingTab) {
+        this.settingTab.display();
       }
 
       // Trigger an immediate sync after successful login

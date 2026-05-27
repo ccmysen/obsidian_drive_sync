@@ -396,6 +396,15 @@ export class SyncManager {
     if (pathParts.some(part => part.startsWith('.'))) return;
 
     await this.withPathLock(file.path, async () => {
+      // Verify the file still exists locally before proceeding
+      const localFile = this.app.vault.getAbstractFileByPath(file.path);
+      if (!(localFile instanceof TFile)) {
+        if (DEBUG_LOGGING) {
+          console.info(`syncSingleFile: File no longer exists locally, skipping sync: ${file.path}`);
+        }
+        return;
+      }
+
       await this.loadState();
       const entry = this.state.files[file.path];
       const { hash: localHash, isBinary, content: localContent } = await this.getFileHash(file);

@@ -1412,4 +1412,12 @@ describe('SyncManager', () => {
     expect(savedState.files['scopedFolder/remote_new.md'].driveFileId).toBe('remoteFileId123');
     expect(savedState.files['otherFolder/remote_ignored.md']).toBeUndefined();
   });
+
+  it('should abort syncSingleFile early and not throw if the file does not exist locally', async () => {
+    // 1. Setup file that does not exist in mockFiles
+    const file = { path: 'non_existent.md', name: 'non_existent.md', extension: 'md' };
+
+    // 2. Call syncSingleFile (should return early without calling getFileHash/read)
+    await expect(syncManager.syncSingleFile(file as any, 'destId')).resolves.toBeUndefined();
+  });
 });
