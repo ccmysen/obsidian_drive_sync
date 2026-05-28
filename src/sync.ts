@@ -590,6 +590,7 @@ export class SyncManager {
 
     const timer = setTimeout(async () => {
       this.debounceTimers.delete(filePath);
+      this.updatePendingSyncVisuals(filePath, false);
       try {
         const resolvedFolderId = await this.resolveDestinationFolderId(destinationFolderId);
         if (resolvedFolderId) {
@@ -601,6 +602,7 @@ export class SyncManager {
     }, 5000); // 5 seconds debounce delay
 
     this.debounceTimers.set(filePath, timer);
+    this.updatePendingSyncVisuals(filePath, true);
   }
 
   // Handle a local deletion event immediately
@@ -614,6 +616,7 @@ export class SyncManager {
       if (existingTimer) {
         clearTimeout(existingTimer);
         this.debounceTimers.delete(path);
+        this.updatePendingSyncVisuals(path, false);
       }
 
       await this.loadState();
@@ -682,6 +685,7 @@ export class SyncManager {
     if (oldTimer) {
       clearTimeout(oldTimer);
       this.debounceTimers.delete(oldPath);
+      this.updatePendingSyncVisuals(oldPath, false);
     }
 
     await this.loadState();
@@ -1275,5 +1279,37 @@ export class SyncManager {
       console.log(summary);
     }
     new Notice(summary);
+  }
+
+  // Check if a path is currently waiting in the debounce queue
+  public isPathPending(path: string): boolean {
+    return this.debounceTimers.has(path);
+  }
+
+  // Toggle CSS classes on elements in the workspace representing the pending file
+  public updatePendingSyncVisuals(path: string, isPending: boolean): void {
+    if (typeof document === 'undefined') return;
+
+    // 1. Update File Explorer DOM items
+    const fileExplorerItems = document.querySelectorAll(`[data-path="${path.replace(/"/g, '\\"')}"]`);
+    fileExplorerItems.forEach(el => {
+      if (isPending) {
+        el.classList.add('is-pending-sync');
+      } else {
+        el.classList.remove('is-pending-sync');
+      }
+    });
+
+    // 2. Update Workspace Leaf Headers (Asterisk on file title)
+    this.app.workspace.iterateAllLeaves(leaf => {
+      if (leaf.view && (leaf.view as any).file && (leaf.view as any).file.path === path) {
+        const container = leaf.view.containerEl;
+        if (isPending) {
+          container.classList.add('is-pending-sync');
+        } else {
+          container.classList.remove('is-pending-sync');
+        }
+      }
+    });
   }
 }

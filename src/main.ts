@@ -68,6 +68,15 @@ export default class ObsidianDriveSync extends Plugin {
       })
     );
 
+    this.registerEvent(
+      this.app.workspace.on('file-open', (file) => {
+        if (file) {
+          const isPending = this.syncManager.isPathPending(file.path);
+          this.syncManager.updatePendingSyncVisuals(file.path, isPending);
+        }
+      })
+    );
+
     console.log("Obsidian Drive Sync: Registering context menu handlers...");
 
     this.registerEvent(

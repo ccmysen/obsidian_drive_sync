@@ -1,0 +1,14 @@
+/* Styling for pending sync file explorer items */
+.nav-file-title.is-pending-sync .nav-file-title-content::after {
+  content: " ⏳";
+  opacity: 0.75;
+  font-size: 0.9em;
+  margin-left: 4px;
+}
+
+/* Styling for pending sync note titles (asterisk on active tab header) */
+.workspace-leaf.is-pending-sync .view-header-title::after {
+  content: " *";
+  color: var(--text-accent);
+  font-weight: bold;
+}
