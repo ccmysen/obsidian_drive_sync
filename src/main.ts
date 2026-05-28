@@ -253,7 +253,7 @@ export default class ObsidianDriveSync extends Plugin {
       client_id: CLIENT_ID,
       redirect_uri: dynamicRedirectUri,
       response_type: 'code',
-      scope: 'https://www.googleapis.com/auth/drive',
+      scope: 'https://www.googleapis.com/auth/drive.file',
       access_type: 'offline',
       prompt: 'consent',
       code_challenge: challenge,
